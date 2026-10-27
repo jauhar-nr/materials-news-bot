@@ -183,6 +183,48 @@ def clean_url(url: Optional[str]) -> str:
     ))
 
 
+def extract_doi_link(url: str, timeout: int = 8) -> Optional[str]:
+    """Extracts the original published paper DOI link from article webpage."""
+    if not url or "arxiv.org" in url:
+        return None
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (compatible; MaterialsNewsDigestBot/2.0; "
+                "+https://github.com/jauhar-nr/materials-news-bot)"
+            ),
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            html_text = resp.read().decode("utf-8", errors="ignore")
+
+        # 1. Look for direct DOI url
+        doi_match = re.search(r"https?://(?:dx\.)?doi\.org/(10\.[0-9]{4,9}/[^\s\"\'<>]+)", html_text)
+        if doi_match:
+            doi = doi_match.group(1).rstrip(".,;()")
+            return f"https://doi.org/{doi}"
+
+        # 2. Look for journal direct links
+        journal_match = re.search(
+            r"https?://(?:www\.)?(?:science\.org/doi/|nature\.com/articles/|journals\.aps\.org/prl/abstract/)[^\s\"\'<>]+",
+            html_text,
+        )
+        if journal_match:
+            return journal_match.group(0).rstrip(".,;()")
+
+        # 3. Look for raw DOI text
+        raw_doi = re.search(r"\b(10\.[0-9]{4,9}/[a-zA-Z0-9\.\-\_]+)\b", html_text)
+        if raw_doi:
+            return f"https://doi.org/{raw_doi.group(1)}"
+
+        return None
+    except Exception as exc:
+        logger.debug("Could not extract DOI from %s: %s", url, exc)
+        return None
+
+
 def parse_date(date_str: Optional[str]) -> Optional[datetime.datetime]:
     """Parses standard RFC 822 / RFC 2822 or ISO dates."""
     if not date_str:
@@ -446,13 +488,14 @@ def save_history(history_file: str, seen: Set[str], max_entries: int = 500) -> N
 def build_discord_embed(article: Dict[str, Any]) -> Dict[str, Any]:
     """
     Builds a clean, academic Discord Embed (Format 1: Nature / Journal Briefing).
-    Zero emojis, understated typography, deep academic blue palette.
+    Zero emojis, understated typography, deep academic blue palette, no footer.
     """
     title = article["title"]
     link = article["link"]
     source = article["source"]
     category = article["category"]
     premier_journal = article.get("premier_journal")
+    doi_link = article.get("doi_link")
     badges = article.get("badges", [])
     desc = article.get("description", "")
 
@@ -478,6 +521,20 @@ def build_discord_embed(article: Dict[str, Any]) -> Dict[str, Any]:
             "inline": True,
         })
 
+    # Display original paper link / DOI
+    if source == "arXiv":
+        fields.append({
+            "name": "Original Paper",
+            "value": f"[arXiv Manuscript]({link}) · [PDF]({link.replace('/abs/', '/pdf/')}.pdf)",
+            "inline": True,
+        })
+    elif doi_link:
+        fields.append({
+            "name": "Original Paper",
+            "value": f"[Direct Journal DOI]({doi_link})",
+            "inline": True,
+        })
+
     # Display focus areas
     if badges:
         fields.append({
@@ -489,17 +546,13 @@ def build_discord_embed(article: Dict[str, Any]) -> Dict[str, Any]:
     embed: Dict[str, Any] = {
         "title": title,
         "url": link,
-        "description": desc or "*Click manuscript link above to read full paper and supplementary findings.*",
+        "description": desc or "*Click paper link above to read full findings.*",
         "color": embed_color,
         "author": {
             "name": f"{source} · {category}",
             "url": link,
         },
         "fields": fields,
-        "footer": {
-            "text": "Phynite Materials Digest · Curated Research Discovery",
-        },
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
 
     return embed
@@ -624,6 +677,8 @@ def run_digest(
 
     success_count = 0
     for article in selected:
+        if "doi_link" not in article and article.get("source") in ("ScienceDaily", "Phys.org"):
+            article["doi_link"] = extract_doi_link(article["link"])
         venue_info = f" ({article['premier_journal']})" if article.get("premier_journal") else ""
         logger.info(
             "Selected Research Discovery: [Score %s] '%s'%s (%s)",

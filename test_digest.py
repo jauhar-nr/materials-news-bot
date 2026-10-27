@@ -177,6 +177,7 @@ class TestDiscordEmbed(unittest.TestCase):
             "category": "Materials Science",
             "score": 115.5,
             "premier_journal": "Science",
+            "doi_link": "https://doi.org/10.1126/science.12345",
             "badges": ["Energy Storage & Batteries", "2D & Advanced Materials"],
         }
         embed = build_discord_embed(article)
@@ -186,11 +187,15 @@ class TestDiscordEmbed(unittest.TestCase):
         self.assertEqual(embed["url"], "https://example.com/article/mxene")
         self.assertEqual(embed["color"], 0x1E3A8A)  # Classic Academic Blue
         self.assertEqual(embed["author"]["name"], "ScienceDaily · Materials Science")
-        self.assertEqual(len(embed["fields"]), 2)
+        self.assertEqual(len(embed["fields"]), 3)
         self.assertEqual(embed["fields"][0]["name"], "Published In")
         self.assertIn("Science", embed["fields"][0]["value"])
-        self.assertEqual(embed["fields"][1]["name"], "Focus Areas")
-        self.assertIn("Energy Storage & Batteries", embed["fields"][1]["value"])
+        self.assertEqual(embed["fields"][1]["name"], "Original Paper")
+        self.assertIn("https://doi.org/10.1126/science.12345", embed["fields"][1]["value"])
+        self.assertEqual(embed["fields"][2]["name"], "Focus Areas")
+        self.assertIn("Energy Storage & Batteries", embed["fields"][2]["value"])
+        self.assertNotIn("footer", embed)
+        self.assertNotIn("timestamp", embed)
 
 
 class TestFeedFetching(unittest.TestCase):
