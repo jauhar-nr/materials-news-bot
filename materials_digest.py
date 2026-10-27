@@ -539,7 +539,7 @@ def run_digest(
     history_file: str,
     webhook_url: Optional[str] = None,
     limit: int = 1,
-    min_score: float = 75.0,
+    min_score: float = 115.0,
     days_window: Optional[int] = None,
     dry_run: bool = False,
     verbose: bool = False,
@@ -651,7 +651,7 @@ def main() -> None:
     parser.add_argument("--history", default="data/history.json", help="Path to history JSON file")
     parser.add_argument("--webhook-url", default=os.environ.get("DISCORD_WEBHOOK_URL"), help="Discord Webhook URL")
     parser.add_argument("--limit", type=int, default=1, help="Number of top articles to select (default: 1)")
-    parser.add_argument("--min-score", type=float, default=75.0, help="Minimum impact threshold (default: 75.0)")
+    parser.add_argument("--min-score", type=float, default=115.0, help="Minimum impact threshold (default: 115.0)")
     parser.add_argument("--days", type=int, default=None, help="Filter articles published within the last N days")
     parser.add_argument("--dry-run", action="store_true", help="Preview output without dispatching webhook")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print detailed scoring breakdown")
