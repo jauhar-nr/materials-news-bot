@@ -541,10 +541,11 @@ def run_digest(
     limit: int = 1,
     min_score: float = 115.0,
     days_window: Optional[int] = None,
+    query: Optional[str] = None,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> int:
-    """Main execution flow with flexible quality-gating."""
+    """Main execution flow with flexible quality-gating or targeted query."""
     logger.info("Starting Materials News Digest run (limit=%d, min_score=%.1f)", limit, min_score)
     history = load_history(history_file)
     logger.info("Loaded %d previously broadcast items from history", len(history))
@@ -556,56 +557,70 @@ def run_digest(
 
     logger.info("Aggregated %d total articles across all feeds", len(all_articles))
 
-    # Optional days window filter
-    if days_window:
-        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_window)
-        filtered_by_window = []
-        for a in all_articles:
-            if a["pub_date"]:
-                dt = datetime.datetime.fromisoformat(a["pub_date"])
-                if dt >= cutoff:
+    # Targeted query mode
+    if query and query.strip():
+        q_clean = query.strip().lower()
+        matched = [
+            a for a in all_articles
+            if q_clean in a["title"].lower() or q_clean in a["description"].lower()
+        ]
+        if not matched:
+            logger.error("No article matched targeted query: '%s'", query)
+            return 1
+        matched.sort(key=lambda x: x["score"], reverse=True)
+        selected = matched[:limit]
+        logger.info("Found %d articles matching targeted query '%s'", len(selected), query)
+    else:
+        # Optional days window filter
+        if days_window:
+            cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_window)
+            filtered_by_window = []
+            for a in all_articles:
+                if a["pub_date"]:
+                    dt = datetime.datetime.fromisoformat(a["pub_date"])
+                    if dt >= cutoff:
+                        filtered_by_window.append(a)
+                else:
                     filtered_by_window.append(a)
-            else:
-                filtered_by_window.append(a)
-        all_articles = filtered_by_window
-        logger.info("Retained %d articles within the last %d days", len(all_articles), days_window)
+            all_articles = filtered_by_window
+            logger.info("Retained %d articles within the last %d days", len(all_articles), days_window)
 
-    # Deduplicate against history
-    fresh_candidates = [
-        a for a in all_articles
-        if a["id"] not in history and a["link"] not in history
-    ]
-    logger.info("Found %d unseen candidates after history filtering", len(fresh_candidates))
+        # Deduplicate against history
+        fresh_candidates = [
+            a for a in all_articles
+            if a["id"] not in history and a["link"] not in history
+        ]
+        logger.info("Found %d unseen candidates after history filtering", len(fresh_candidates))
 
-    # Quality Gate: Strict minimum impact threshold
-    qualifying = [a for a in fresh_candidates if a["score"] >= min_score]
-    logger.info("%d candidates pass quality threshold (>= %.1f pts)", len(qualifying), min_score)
+        # Quality Gate: Strict minimum impact threshold
+        qualifying = [a for a in fresh_candidates if a["score"] >= min_score]
+        logger.info("%d candidates pass quality threshold (>= %.1f pts)", len(qualifying), min_score)
 
-    # Sort descending by impact score
-    qualifying.sort(key=lambda x: x["score"], reverse=True)
+        # Sort descending by impact score
+        qualifying.sort(key=lambda x: x["score"], reverse=True)
 
-    if verbose and qualifying:
-        logger.info("--- Top Qualifying Discoveries ---")
-        for idx, item in enumerate(qualifying[:5], 1):
-            j_tag = f" [Venue: {item.get('premier_journal')}]" if item.get("premier_journal") else ""
+        if verbose and qualifying:
+            logger.info("--- Top Qualifying Discoveries ---")
+            for idx, item in enumerate(qualifying[:5], 1):
+                j_tag = f" [Venue: {item.get('premier_journal')}]" if item.get("premier_journal") else ""
+                logger.info(
+                    "[%d] (Score: %s)%s [%s] %s",
+                    idx,
+                    item["score"],
+                    j_tag,
+                    item["source"],
+                    item["title"],
+                )
+
+        selected = qualifying[:limit]
+
+        if not selected:
             logger.info(
-                "[%d] (Score: %s)%s [%s] %s",
-                idx,
-                item["score"],
-                j_tag,
-                item["source"],
-                item["title"],
+                "Quality Gate Active: No research met the high-impact threshold (>= %.1f pts) today. "
+                "Remaining silent to prevent channel noise.",
+                min_score,
             )
-
-    selected = qualifying[:limit]
-
-    if not selected:
-        logger.info(
-            "Quality Gate Active: No research met the high-impact threshold (>= %.1f pts) today. "
-            "Remaining silent to prevent channel noise.",
-            min_score,
-        )
-        return 0
+            return 0
 
     success_count = 0
     for article in selected:
@@ -653,6 +668,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=1, help="Number of top articles to select (default: 1)")
     parser.add_argument("--min-score", type=float, default=115.0, help="Minimum impact threshold (default: 115.0)")
     parser.add_argument("--days", type=int, default=None, help="Filter articles published within the last N days")
+    parser.add_argument("--query", type=str, default=None, help="Target a specific article by keyword/title")
     parser.add_argument("--dry-run", action="store_true", help="Preview output without dispatching webhook")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print detailed scoring breakdown")
 
@@ -665,6 +681,7 @@ def main() -> None:
             limit=args.limit,
             min_score=args.min_score,
             days_window=args.days,
+            query=args.query,
             dry_run=args.dry_run,
             verbose=args.verbose,
         )

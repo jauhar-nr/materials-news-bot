@@ -16,6 +16,11 @@ on:
         type: number
         default: 1
         required: false
+      query:
+        description: 'Targeted article search query / title'
+        type: string
+        default: ''
+        required: false
 
 concurrency:
   group: daily-digest
@@ -62,6 +67,9 @@ jobs:
           EXTRA_ARGS=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --dry-run"
+          fi
+          if [ -n "${{ inputs.query }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --query \"${{ inputs.query }}\""
           fi
           LIMIT="${{ inputs.limit }}"
           if [ -z "$LIMIT" ]; then
