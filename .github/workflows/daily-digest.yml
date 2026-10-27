@@ -63,21 +63,21 @@ jobs:
       - name: Run Daily Materials Digest
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          QUERY: ${{ inputs.query }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          LIMIT: ${{ inputs.limit }}
         run: |
-          EXTRA_ARGS=""
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --dry-run"
+          ARGS=("--history" "data/history.json" "--verbose")
+          if [ "$DRY_RUN" = "true" ]; then
+            ARGS+=("--dry-run")
           fi
-          if [ -n "${{ inputs.query }}" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --query \"${{ inputs.query }}\""
+          if [ -n "$LIMIT" ]; then
+            ARGS+=("--limit" "$LIMIT")
+          else
+            ARGS+=("--limit" "1")
           fi
-          LIMIT="${{ inputs.limit }}"
-          if [ -z "$LIMIT" ]; then
-            LIMIT="1"
+          if [ -n "$QUERY" ]; then
+            ARGS+=("--query" "$QUERY")
           fi
           
-          python3 materials_digest.py \
-            --history data/history.json \
-            --limit "$LIMIT" \
-            --verbose \
-            $EXTRA_ARGS
+          python3 materials_digest.py "${ARGS[@]}"
