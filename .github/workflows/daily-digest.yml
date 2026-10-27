@@ -1,0 +1,75 @@
+name: Daily Materials Science Digest
+
+on:
+  schedule:
+    # 01:00 UTC = 08:00 WIB (Jakarta Time) every day
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (preview without sending to Discord)'
+        type: boolean
+        default: false
+        required: false
+      limit:
+        description: 'Number of top articles to broadcast'
+        type: number
+        default: 1
+        required: false
+
+concurrency:
+  group: daily-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Restore history cache
+        uses: actions/cache@v4
+        id: history-cache
+        with:
+          path: data/history.json
+          key: materials-digest-history-${{ github.run_id }}
+          restore-keys: |
+            materials-digest-history-
+
+      - name: Ensure history file exists
+        run: |
+          mkdir -p data
+          if [ ! -f data/history.json ] || [ ! -s data/history.json ]; then
+            echo "[]" > data/history.json
+          fi
+
+      - name: Run unit tests
+        run: |
+          python3 -m unittest test_digest.py -v
+
+      - name: Run Daily Materials Digest
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --dry-run"
+          fi
+          LIMIT="${{ inputs.limit }}"
+          if [ -z "$LIMIT" ]; then
+            LIMIT="1"
+          fi
+          
+          python3 materials_digest.py \
+            --history data/history.json \
+            --limit "$LIMIT" \
+            --verbose \
+            $EXTRA_ARGS
