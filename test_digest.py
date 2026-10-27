@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Unit tests for Materials News Digest Bot
-----------------------------------------
+Unit tests for Materials News Digest Bot (Academic Edition)
+-----------------------------------------------------------
 Tests scoring algorithm, text cleaners, RSS parsing, deduplication, and Discord payload builders.
 """
 
@@ -17,6 +17,7 @@ from materials_digest import (
     calculate_impact_score,
     clean_text,
     clean_url,
+    detect_premier_journal,
     fetch_feed,
     load_history,
     parse_date,
@@ -34,9 +35,13 @@ class TestTextAndUrlCleaning(unittest.TestCase):
         raw = "Li-ion &amp; solid-state &quot;miracle&quot; &#39;alloy&#39;"
         self.assertEqual(clean_text(raw), 'Li-ion & solid-state "miracle" \'alloy\'')
 
+    def test_clean_text_abstract_prefix(self):
+        raw = "Abstract: First-principles calculations explore the novel monolayer."
+        self.assertEqual(clean_text(raw), "First-principles calculations explore the novel monolayer.")
+
     def test_clean_text_arxiv_prefix(self):
         raw = "arXiv:2610.12345v1 Announce Type: new \n Abstract: Novel 2D perovskite discovered."
-        self.assertEqual(clean_text(raw), "Abstract: Novel 2D perovskite discovered.")
+        self.assertEqual(clean_text(raw), "Novel 2D perovskite discovered.")
 
     def test_clean_url_utm_stripping(self):
         url = "https://example.com/article/123?utm_source=rss&utm_medium=feed&ref=sciencedaily"
@@ -68,44 +73,67 @@ class TestDateParsing(unittest.TestCase):
         self.assertIsNone(parse_date(None))
 
 
+class TestJournalDetection(unittest.TestCase):
+    def test_detect_premier_journal(self):
+        text = "This breakthrough was published in Nature Materials yesterday."
+        self.assertEqual(detect_premier_journal(text), "Nature Materials")
+
+    def test_detect_prl(self):
+        text = "Researchers report novel spin states in Physical Review Letters."
+        self.assertEqual(detect_premier_journal(text), "Physical Review Letters")
+
+
 class TestImpactScoring(unittest.TestCase):
     def test_scoring_title_multiplier(self):
-        # Keyword in title gets 2.2x weight
         pub_now = datetime.datetime.now(datetime.timezone.utc)
-        score_title, badges_title, _ = calculate_impact_score(
+        score_title, badges_title, _, _ = calculate_impact_score(
             title="Breakthrough in room temperature superconductor",
             description="A novel observation is reported.",
             pub_date=pub_now,
         )
 
-        score_desc, _, _ = calculate_impact_score(
+        score_desc, _, _, _ = calculate_impact_score(
             title="Observation in physics",
             description="Breakthrough in room temperature superconductor reported.",
             pub_date=pub_now,
         )
 
         self.assertGreater(score_title, score_desc)
-        self.assertIn("⚡ Breakthrough", badges_title)
-        self.assertIn("⚛️ Quantum & Superconductors", badges_title)
+        self.assertIn("Breakthrough Discovery", badges_title)
+        self.assertIn("Quantum & Superconductors", badges_title)
+
+    def test_scoring_journal_boost(self):
+        pub_now = datetime.datetime.now(datetime.timezone.utc)
+        score_nature, _, journal_name, _ = calculate_impact_score(
+            title="Observation in high-Tc physics",
+            description="The study was published in Science and demonstrates novel phases.",
+            pub_date=pub_now,
+        )
+        score_plain, _, _, _ = calculate_impact_score(
+            title="Observation in high-Tc physics",
+            description="The study demonstrates novel phases.",
+            pub_date=pub_now,
+        )
+        self.assertEqual(journal_name, "Science")
+        self.assertGreater(score_nature, score_plain)
 
     def test_scoring_recency_boost(self):
         now = datetime.datetime.now(datetime.timezone.utc)
         yesterday = now - datetime.timedelta(hours=10)
-        old = now - datetime.timedelta(days=10)
+        old = now - datetime.timedelta(days=15)
 
-        score_fresh, _, _ = calculate_impact_score(
+        score_fresh, _, _, _ = calculate_impact_score(
             title="Solid-state battery research",
             description="Testing new electrolyte",
             pub_date=yesterday,
         )
 
-        score_old, _, _ = calculate_impact_score(
+        score_old, _, _, _ = calculate_impact_score(
             title="Solid-state battery research",
             description="Testing new electrolyte",
             pub_date=old,
         )
 
-        # Fresh item gets +15 recency boost vs -15 penalty for > 1 week old
         self.assertGreater(score_fresh, score_old)
 
 
@@ -114,17 +142,14 @@ class TestHistoryTracking(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             hist_path = os.path.join(tmpdir, "history.json")
             
-            # Non-existent file starts empty
             seen = load_history(hist_path)
             self.assertEqual(len(seen), 0)
 
-            # Add entries and save
             seen.add("item-1")
             seen.add("item-2")
             seen.add("https://example.com/item-1")
             save_history(hist_path, seen, max_entries=10)
 
-            # Re-read
             reloaded = load_history(hist_path)
             self.assertEqual(len(reloaded), 3)
             self.assertIn("item-1", reloaded)
@@ -150,18 +175,22 @@ class TestDiscordEmbed(unittest.TestCase):
             "description": "Researchers developed a new scalable synthesis technique.",
             "source": "ScienceDaily",
             "category": "Materials Science",
-            "score": 85.5,
-            "badges": ["🔋 Energy & Battery", "🔬 2D & Advanced Materials", "⚡ Breakthrough"],
+            "score": 115.5,
+            "premier_journal": "Science",
+            "badges": ["Energy Storage & Batteries", "2D & Advanced Materials"],
         }
         embed = build_discord_embed(article)
 
         self.assertIn("MXene", embed["title"])
+        self.assertNotIn("🔥", embed["title"])
         self.assertEqual(embed["url"], "https://example.com/article/mxene")
-        self.assertEqual(embed["color"], 0xE67E22)  # Exceptional impact amber color
-        self.assertEqual(embed["author"]["name"], "ScienceDaily • Materials Science")
+        self.assertEqual(embed["color"], 0x1E3A8A)  # Classic Academic Blue
+        self.assertEqual(embed["author"]["name"], "ScienceDaily · Materials Science")
         self.assertEqual(len(embed["fields"]), 2)
-        self.assertIn("Exceptional", embed["fields"][0]["value"])
-        self.assertIn("Energy & Battery", embed["fields"][1]["value"])
+        self.assertEqual(embed["fields"][0]["name"], "Published In")
+        self.assertIn("Science", embed["fields"][0]["value"])
+        self.assertEqual(embed["fields"][1]["name"], "Focus Areas")
+        self.assertIn("Energy Storage & Batteries", embed["fields"][1]["value"])
 
 
 class TestFeedFetching(unittest.TestCase):
@@ -175,7 +204,7 @@ class TestFeedFetching(unittest.TestCase):
                     <title>Breakthrough in Perovskite Solar Cells</title>
                     <link>https://example.com/perovskite?utm_source=rss</link>
                     <guid>perov-101</guid>
-                    <description>Record efficiency achieved using novel chemical passivation.</description>
+                    <description>Record efficiency achieved in Nature Energy using novel chemical passivation.</description>
                     <pubDate>Wed, 27 Oct 2026 10:00:00 GMT</pubDate>
                 </item>
             </channel>
@@ -190,7 +219,7 @@ class TestFeedFetching(unittest.TestCase):
             "name": "TestFeed",
             "category": "Energy",
             "url": "https://example.com/feed.xml",
-            "curated_boost": 5.0,
+            "curated_boost": 15.0,
         }
 
         articles = fetch_feed(feed_cfg)
@@ -199,9 +228,10 @@ class TestFeedFetching(unittest.TestCase):
         self.assertEqual(art["id"], "perov-101")
         self.assertEqual(art["title"], "Breakthrough in Perovskite Solar Cells")
         self.assertEqual(art["link"], "https://example.com/perovskite")
-        self.assertGreater(art["score"], 50.0)
-        self.assertIn("⚡ Breakthrough", art["badges"])
-        self.assertIn("🔋 Energy & Battery", art["badges"])
+        self.assertGreater(art["score"], 80.0)
+        self.assertEqual(art["premier_journal"], "Nature Energy")
+        self.assertIn("Breakthrough Discovery", art["badges"])
+        self.assertIn("Energy Storage & Batteries", art["badges"])
 
 
 class TestRunDigest(unittest.TestCase):
@@ -212,11 +242,12 @@ class TestRunDigest(unittest.TestCase):
                 "id": "art-1",
                 "title": "Quantum Spin Liquid Candidate Discovered",
                 "link": "https://example.com/spin-liquid",
-                "description": "Magnetic measurements reveal topological states.",
+                "description": "Magnetic measurements in Nature reveal topological states.",
                 "source": "Phys.org",
                 "category": "Physics",
-                "score": 90.0,
-                "badges": ["⚛️ Quantum & Superconductors"],
+                "score": 110.0,
+                "premier_journal": "Nature",
+                "badges": ["Quantum & Superconductors"],
                 "breakdown": {"matched_keywords": ["quantum", "topological"]},
             }
         ]
@@ -226,7 +257,7 @@ class TestRunDigest(unittest.TestCase):
             code = run_digest(
                 history_file=hist_file,
                 limit=1,
-                min_score=10.0,
+                min_score=75.0,
                 dry_run=True,
                 verbose=False,
             )

@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-Materials News Digest Bot
--------------------------
-Curates and broadcasts the #1 highest-impact materials science discovery daily
-to Discord via Webhook.
+Materials News Digest Bot (Academic Edition)
+--------------------------------------------
+Curates and broadcasts premier, high-impact materials science breakthroughs
+to Discord via Webhook in a clean, professional, journal-grade format.
 
-Features:
-- Multi-source RSS aggregation (ScienceDaily, Phys.org, arXiv).
-- Weighted Impact Scoring Engine: analyzes breakthroughs, energy/batteries,
-  superconductors, novel 2D materials, and DFT/MD computational advances.
-- Intelligent deduplication with local JSON history.
-- Clean, attractive Discord Embed with topic badges and impact scores.
+Design Principles:
+- Zero emoji clutter; clean typography inspired by Nature / Science digests.
+- Journal-level credibility: prioritzes peer-reviewed discoveries published in
+  premier journals (Nature, Science, Physical Review Letters, Advanced Materials).
+- Experimental validation weighting: rewards synthesized/tested physical discoveries
+  over unvalidated theoretical preprint claims.
+- Flexible cadence (Quality Gate): sends 1 top paper when a genuine breakthrough
+  meets the strict threshold (>= 75 pts), otherwise remains completely silent to
+  prevent channel spam.
+- Cache-backed state persistence for GitHub Actions without git commit overhead.
 - Zero external dependencies (Python 3 standard library only).
 """
 
@@ -42,14 +46,14 @@ DEFAULT_FEEDS = [
         "category": "Materials Science",
         "url": "https://www.sciencedaily.com/rss/matter_energy/materials_science.xml",
         "type": "rss",
-        "curated_boost": 8.0,
+        "curated_boost": 15.0,
     },
     {
         "name": "Phys.org",
         "category": "Materials Science",
         "url": "https://phys.org/rss-feed/physics-news/materials-science/",
         "type": "rss",
-        "curated_boost": 8.0,
+        "curated_boost": 15.0,
     },
     {
         "name": "arXiv",
@@ -60,10 +64,31 @@ DEFAULT_FEEDS = [
     },
 ]
 
-# Scoring lexicon with categories, weights, and display badges
+# Premier international peer-reviewed journals (triggers quality reputation bonus)
+PREMIER_JOURNALS = [
+    "Nature Materials", "Nature Energy", "Nature Nanotechnology", "Nature Physics",
+    "Nature Communications", "Nature", "Science Advances", "Science",
+    "Physical Review Letters", "Physical Review X", "PRL", "PRX",
+    "Advanced Materials", "Advanced Energy Materials", "Nano Letters", "ACS Nano",
+    "Journal of the American Chemical Society", "JACS", "Energy & Environmental Science",
+    "Matter", "Joule", "Applied Physics Letters",
+]
+JOURNAL_REGEX = re.compile(
+    r"\b(" + "|".join(re.escape(j) for j in PREMIER_JOURNALS) + r")\b",
+    re.IGNORECASE,
+)
+
+# Experimental validation & synthesis markers
+EXPERIMENTAL_TERMS = [
+    "synthes", "fabricat", "experiment", "measur", "prototype", "device",
+    "single crystal", "thin film", "operando", "in situ", "microscopy", "tem",
+    "sem", "afm", "xrd", "spectroscop", "battery test", "cycling", "capacity",
+]
+
+# Clean academic topic categories (zero emojis)
 TOPIC_CATEGORIES = {
     "breakthrough": {
-        "badge": "⚡ Breakthrough",
+        "badge": "Breakthrough Discovery",
         "weight": 25.0,
         "keywords": [
             "breakthrough", "record efficiency", "room temperature", "revolutionary",
@@ -72,8 +97,8 @@ TOPIC_CATEGORIES = {
         ],
     },
     "energy_battery": {
-        "badge": "🔋 Energy & Battery",
-        "weight": 20.0,
+        "badge": "Energy Storage & Batteries",
+        "weight": 22.0,
         "keywords": [
             "solid-state battery", "lithium-ion", "lithium-metal", "lithium-sulfur",
             "sodium-ion", "zinc-air", "perovskite", "solar cell", "photovoltaic",
@@ -82,8 +107,8 @@ TOPIC_CATEGORIES = {
         ],
     },
     "quantum_supercond": {
-        "badge": "⚛️ Quantum & Superconductors",
-        "weight": 20.0,
+        "badge": "Quantum & Superconductors",
+        "weight": 22.0,
         "keywords": [
             "superconductor", "superconductivity", "topological insulator",
             "quantum material", "quantum dot", "majorana", "spintronics",
@@ -91,7 +116,7 @@ TOPIC_CATEGORIES = {
         ],
     },
     "advanced_2d": {
-        "badge": "🔬 2D & Advanced Materials",
+        "badge": "2D & Advanced Materials",
         "weight": 18.0,
         "keywords": [
             "graphene", "mxene", "metal-organic framework", "mof", "covalent organic framework",
@@ -100,7 +125,7 @@ TOPIC_CATEGORIES = {
         ],
     },
     "comp_ai": {
-        "badge": "💻 Computational & AI",
+        "badge": "Computational & AI Materials",
         "weight": 18.0,
         "keywords": [
             "machine learning", "artificial intelligence", "deep learning", "neural network",
@@ -110,8 +135,8 @@ TOPIC_CATEGORIES = {
         ],
     },
     "discovery_synthesis": {
-        "badge": "🧪 Synthesis & Discovery",
-        "weight": 10.0,
+        "badge": "Synthesis & Experimental",
+        "weight": 12.0,
         "keywords": [
             "synthesize", "synthesis", "fabricate", "fabrication", "discover", "discovery",
             "engineer", "engineering", "novel", "pioneering", "scalable", "uncover",
@@ -131,6 +156,8 @@ def clean_text(text: Optional[str]) -> str:
     clean = html.unescape(clean)
     # Remove leading arXiv metadata prefixes if present (e.g. arXiv:2610.12345v1 Announce Type: new)
     clean = re.sub(r"^arXiv:[0-9\.]+v?[0-9]*\s*Announce Type:\s*\w+\s*", "", clean, flags=re.IGNORECASE)
+    # Remove redundant "Abstract:" or "Abstract -" prefixes
+    clean = re.sub(r"^abstract\s*[:\-–]\s*", "", clean, flags=re.IGNORECASE)
     # Normalize whitespace
     clean = re.sub(r"\s+", " ", clean).strip()
     # Normalize spaces before punctuation
@@ -143,7 +170,6 @@ def clean_url(url: Optional[str]) -> str:
     if not url:
         return ""
     parsed = urllib.parse.urlparse(url.strip())
-    # Rebuild URL without tracking query parameters
     query_params = urllib.parse.parse_qs(parsed.query, keep_blank_values=False)
     filtered_params = {k: v for k, v in query_params.items() if not k.startswith("utm_")}
     clean_query = urllib.parse.urlencode(filtered_params, doseq=True)
@@ -162,7 +188,6 @@ def parse_date(date_str: Optional[str]) -> Optional[datetime.datetime]:
     if not date_str:
         return None
     date_str = date_str.strip()
-    # Try email/RFC 2822 parsing (standard in RSS)
     try:
         import email.utils
         parsed_tuple = email.utils.parsedate_to_datetime(date_str)
@@ -172,7 +197,6 @@ def parse_date(date_str: Optional[str]) -> Optional[datetime.datetime]:
     except Exception:
         pass
 
-    # Try ISO formats
     try:
         dt = datetime.datetime.fromisoformat(date_str.replace("Z", "+00:00"))
         if dt.tzinfo is None:
@@ -184,18 +208,36 @@ def parse_date(date_str: Optional[str]) -> Optional[datetime.datetime]:
     return None
 
 
+def detect_premier_journal(text: str) -> Optional[str]:
+    """Detects premier peer-reviewed journal citation in title or body."""
+    matches = JOURNAL_REGEX.findall(text)
+    if not matches:
+        return None
+    # Pick the most specific match (longest string)
+    matches_sorted = sorted(matches, key=len, reverse=True)
+    best_match = matches_sorted[0].strip()
+    # Standardize casing
+    if best_match.upper() in ("PRL", "PRX", "JACS"):
+        return best_match.upper()
+    return best_match.title()
+
+
 def calculate_impact_score(
     title: str,
     description: str,
     pub_date: Optional[datetime.datetime],
+    source_name: str = "",
     curated_boost: float = 0.0,
-) -> Tuple[float, List[str], Dict[str, Any]]:
+) -> Tuple[float, List[str], Optional[str], Dict[str, Any]]:
     """
-    Computes an impact score based on keywords, domain relevance, recency,
-    and title emphasis. Returns (total_score, active_badges, breakdown_dict).
+    Computes a research impact score based on keywords, journal prestige,
+    experimental validation, recency, and title emphasis.
+    Returns (total_score, active_badges, premier_journal, breakdown_dict).
     """
+    full_text = f"{title} {description}"
     title_lower = title.lower()
     desc_lower = description.lower()
+    full_lower = full_text.lower()
     
     keyword_score = 0.0
     matched_categories: Set[str] = set()
@@ -205,7 +247,6 @@ def calculate_impact_score(
         cat_matched = False
         cat_weight = cat_info["weight"]
         for kw in cat_info["keywords"]:
-            # Check title first (title gets 2.2x multiplier)
             if kw in title_lower:
                 keyword_score += cat_weight * 2.2
                 cat_matched = True
@@ -218,23 +259,40 @@ def calculate_impact_score(
         if cat_matched:
             matched_categories.add(cat_id)
 
+    # Premier journal prestige bonus (+35 pts)
+    detected_journal = detect_premier_journal(full_text)
+    journal_boost = 35.0 if detected_journal else 0.0
+
+    # Experimental validation check for preprints
+    experimental_adj = 0.0
+    if source_name == "arXiv":
+        has_experimental = any(term in full_lower for term in EXPERIMENTAL_TERMS)
+        if has_experimental:
+            experimental_adj = 10.0
+        else:
+            # Discount unvalidated theoretical calculations
+            experimental_adj = -25.0
+
     # Recency boost
     recency_score = 0.0
     now = datetime.datetime.now(datetime.timezone.utc)
     if pub_date:
         age_hours = (now - pub_date).total_seconds() / 3600.0
-        if age_hours <= 24:
+        if age_hours <= 36:
             recency_score = 15.0
-        elif age_hours <= 48:
-            recency_score = 8.0
         elif age_hours <= 72:
-            recency_score = 3.0
-        elif age_hours > 168:  # older than 1 week
+            recency_score = 8.0
+        elif age_hours > 240:  # older than 10 days
             recency_score = -15.0
 
-    total_score = keyword_score + recency_score + curated_boost
+    total_score = (
+        keyword_score +
+        journal_boost +
+        curated_boost +
+        experimental_adj +
+        recency_score
+    )
 
-    # Collect up to 3 highest priority badges
     priority_order = [
         "breakthrough",
         "energy_battery",
@@ -251,12 +309,15 @@ def calculate_impact_score(
 
     breakdown = {
         "keyword_score": round(keyword_score, 1),
-        "recency_score": round(recency_score, 1),
+        "journal_boost": round(journal_boost, 1),
         "curated_boost": round(curated_boost, 1),
+        "experimental_adj": round(experimental_adj, 1),
+        "recency_score": round(recency_score, 1),
+        "premier_journal": detected_journal,
         "matched_keywords": matched_keywords[:8],
     }
 
-    return round(total_score, 1), badges, breakdown
+    return round(total_score, 1), badges, detected_journal, breakdown
 
 
 def fetch_feed(feed_cfg: Dict[str, Any], timeout: int = 15) -> List[Dict[str, Any]]:
@@ -268,7 +329,7 @@ def fetch_feed(feed_cfg: Dict[str, Any], timeout: int = 15) -> List[Dict[str, An
 
     headers = {
         "User-Agent": (
-            "Mozilla/5.0 (compatible; MaterialsNewsDigestBot/1.0; "
+            "Mozilla/5.0 (compatible; MaterialsNewsDigestBot/2.0; "
             "+https://github.com/jauhar-nr/materials-news-bot)"
         ),
         "Accept": "application/rss+xml, application/xml, text/xml, */*",
@@ -289,21 +350,17 @@ def fetch_feed(feed_cfg: Dict[str, Any], timeout: int = 15) -> List[Dict[str, An
         return []
 
     articles = []
-    # Find all items (RSS 2.0 or RDF)
     items = root.findall(".//item")
     if not items:
-        # Check for Atom entry tags
         items = root.findall(".//{*}entry")
 
     for item in items:
-        # Title
         title_el = item.find("{*}title")
         raw_title = title_el.text if (title_el is not None and title_el.text) else ""
         title = clean_text(raw_title)
         if not title:
             continue
 
-        # Link
         link_el = item.find("{*}link")
         raw_link = ""
         if link_el is not None:
@@ -312,7 +369,6 @@ def fetch_feed(feed_cfg: Dict[str, Any], timeout: int = 15) -> List[Dict[str, An
         if not link:
             continue
 
-        # ID / GUID
         guid_el = item.find("{*}guid")
         if guid_el is None:
             guid_el = item.find("{*}id")
@@ -322,7 +378,6 @@ def fetch_feed(feed_cfg: Dict[str, Any], timeout: int = 15) -> List[Dict[str, An
         else:
             guid = link
 
-        # Description / Summary
         desc_el = item.find("{*}description")
         if desc_el is None:
             desc_el = item.find("{*}summary")
@@ -331,7 +386,6 @@ def fetch_feed(feed_cfg: Dict[str, Any], timeout: int = 15) -> List[Dict[str, An
         raw_desc = desc_el.text if (desc_el is not None and desc_el.text) else ""
         desc = clean_text(raw_desc)
 
-        # Publication date
         pub_el = item.find("{*}pubDate")
         if pub_el is None:
             pub_el = item.find("{*}published")
@@ -340,11 +394,11 @@ def fetch_feed(feed_cfg: Dict[str, Any], timeout: int = 15) -> List[Dict[str, An
         pub_str = pub_el.text if (pub_el is not None and pub_el.text) else ""
         pub_date = parse_date(pub_str)
 
-        # Compute impact score
-        score, badges, breakdown = calculate_impact_score(
+        score, badges, premier_j, breakdown = calculate_impact_score(
             title=title,
             description=desc,
             pub_date=pub_date,
+            source_name=source_name,
             curated_boost=curated_boost,
         )
 
@@ -358,6 +412,7 @@ def fetch_feed(feed_cfg: Dict[str, Any], timeout: int = 15) -> List[Dict[str, An
             "pub_date": pub_date.isoformat() if pub_date else None,
             "score": score,
             "badges": badges,
+            "premier_journal": premier_j,
             "breakdown": breakdown,
         })
 
@@ -389,55 +444,60 @@ def save_history(history_file: str, seen: Set[str], max_entries: int = 500) -> N
 
 
 def build_discord_embed(article: Dict[str, Any]) -> Dict[str, Any]:
-    """Builds a rich Discord Embed object for the daily top pick."""
+    """
+    Builds a clean, academic Discord Embed (Format 1: Nature / Journal Briefing).
+    Zero emojis, understated typography, deep academic blue palette.
+    """
     title = article["title"]
     link = article["link"]
     source = article["source"]
     category = article["category"]
-    score = article["score"]
+    premier_journal = article.get("premier_journal")
     badges = article.get("badges", [])
     desc = article.get("description", "")
 
-    # Clean description snippet (truncate at ~380 chars on word boundary)
-    if len(desc) > 380:
-        desc = desc[:380].rsplit(" ", 1)[0] + "..."
+    # Clean excerpt truncated at ~420 chars on word boundary
+    if len(desc) > 420:
+        desc = desc[:420].rsplit(" ", 1)[0] + "..."
 
-    # Impact Tier representation
-    if score >= 60.0:
-        score_display = f"🔥 Exceptional ({score:g} pts)"
-        embed_color = 0xE67E22  # Rich warm amber / orange
-    elif score >= 35.0:
-        score_display = f"⭐ High Impact ({score:g} pts)"
-        embed_color = 0x3498DB  # Vibrant scientific blue
+    # Deep Classic Academic Blue
+    embed_color = 0x1E3A8A
+
+    fields = []
+    # Display published venue
+    if premier_journal:
+        fields.append({
+            "name": "Published In",
+            "value": f"*{premier_journal}*",
+            "inline": True,
+        })
     else:
-        score_display = f"✨ Notable ({score:g} pts)"
-        embed_color = 0x2ECC71  # Emerald green
+        fields.append({
+            "name": "Venue",
+            "value": f"{source} · {category}",
+            "inline": True,
+        })
 
-    badges_text = " • ".join(badges) if badges else "🧪 Materials Science"
+    # Display focus areas
+    if badges:
+        fields.append({
+            "name": "Focus Areas",
+            "value": " · ".join(badges),
+            "inline": True,
+        })
 
     embed: Dict[str, Any] = {
-        "title": f"🔥 {title}",
+        "title": title,
         "url": link,
-        "description": desc or "*No excerpt provided. Click title to read full paper/article.*",
+        "description": desc or "*Click manuscript link above to read full paper and supplementary findings.*",
         "color": embed_color,
         "author": {
-            "name": f"{source} • {category}",
+            "name": f"{source} · {category}",
             "url": link,
         },
-        "fields": [
-            {
-                "name": "⚡ Impact Rating",
-                "value": score_display,
-                "inline": True,
-            },
-            {
-                "name": "🏷️ Key Focus",
-                "value": badges_text,
-                "inline": True,
-            },
-        ],
+        "fields": fields,
         "footer": {
-            "text": "Phynite Materials Digest • Curated Daily Top Discovery",
+            "text": "Phynite Materials Digest · Curated Research Discovery",
         },
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
@@ -446,10 +506,9 @@ def build_discord_embed(article: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def send_discord_webhook(webhook_url: str, article: Dict[str, Any]) -> bool:
-    """Dispatches the Discord webhook payload."""
+    """Dispatches the Discord webhook payload with pristine embed and zero robotic headers."""
     embed = build_discord_embed(article)
     payload = {
-        "content": "**📢 Daily Materials Science Top Discovery**\nHere is today's highest-impact materials breakthrough:",
         "embeds": [embed],
     }
 
@@ -459,7 +518,7 @@ def send_discord_webhook(webhook_url: str, article: Dict[str, Any]) -> bool:
         data=req_data,
         headers={
             "Content-Type": "application/json",
-            "User-Agent": "MaterialsNewsDigestBot/1.0",
+            "User-Agent": "MaterialsNewsDigestBot/2.0",
         },
     )
 
@@ -480,11 +539,12 @@ def run_digest(
     history_file: str,
     webhook_url: Optional[str] = None,
     limit: int = 1,
-    min_score: float = 10.0,
+    min_score: float = 75.0,
+    days_window: Optional[int] = None,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> int:
-    """Main execution flow."""
+    """Main execution flow with flexible quality-gating."""
     logger.info("Starting Materials News Digest run (limit=%d, min_score=%.1f)", limit, min_score)
     history = load_history(history_file)
     logger.info("Loaded %d previously broadcast items from history", len(history))
@@ -496,56 +556,76 @@ def run_digest(
 
     logger.info("Aggregated %d total articles across all feeds", len(all_articles))
 
-    # Deduplicate against history (check both ID and clean URL)
+    # Optional days window filter
+    if days_window:
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_window)
+        filtered_by_window = []
+        for a in all_articles:
+            if a["pub_date"]:
+                dt = datetime.datetime.fromisoformat(a["pub_date"])
+                if dt >= cutoff:
+                    filtered_by_window.append(a)
+            else:
+                filtered_by_window.append(a)
+        all_articles = filtered_by_window
+        logger.info("Retained %d articles within the last %d days", len(all_articles), days_window)
+
+    # Deduplicate against history
     fresh_candidates = [
         a for a in all_articles
         if a["id"] not in history and a["link"] not in history
     ]
     logger.info("Found %d unseen candidates after history filtering", len(fresh_candidates))
 
-    # Filter by minimum score
+    # Quality Gate: Strict minimum impact threshold
     qualifying = [a for a in fresh_candidates if a["score"] >= min_score]
-    logger.info("%d candidates meet minimum score threshold (>= %.1f)", len(qualifying), min_score)
+    logger.info("%d candidates pass quality threshold (>= %.1f pts)", len(qualifying), min_score)
 
     # Sort descending by impact score
     qualifying.sort(key=lambda x: x["score"], reverse=True)
 
-    if verbose:
-        logger.info("--- Top 5 Candidates Breakdown ---")
+    if verbose and qualifying:
+        logger.info("--- Top Qualifying Discoveries ---")
         for idx, item in enumerate(qualifying[:5], 1):
+            j_tag = f" [Venue: {item.get('premier_journal')}]" if item.get("premier_journal") else ""
             logger.info(
-                "[%d] (Score: %s) [%s] %s (Keywords: %s)",
+                "[%d] (Score: %s)%s [%s] %s",
                 idx,
                 item["score"],
+                j_tag,
                 item["source"],
                 item["title"],
-                item["breakdown"].get("matched_keywords"),
             )
 
     selected = qualifying[:limit]
 
     if not selected:
-        logger.info("No qualifying new articles to publish today.")
+        logger.info(
+            "Quality Gate Active: No research met the high-impact threshold (>= %.1f pts) today. "
+            "Remaining silent to prevent channel noise.",
+            min_score,
+        )
         return 0
 
     success_count = 0
     for article in selected:
+        venue_info = f" ({article['premier_journal']})" if article.get("premier_journal") else ""
         logger.info(
-            "Selected Daily Top Pick: [Score %s] '%s' (%s)",
+            "Selected Research Discovery: [Score %s] '%s'%s (%s)",
             article["score"],
             article["title"],
+            venue_info,
             article["link"],
         )
 
         if dry_run:
             print("\n" + "=" * 60)
-            print("DRY RUN: Discord Webhook Payload Preview")
+            print("DRY RUN: Academic Discord Embed Preview")
             print("=" * 60)
             embed = build_discord_embed(article)
             print(json.dumps(embed, indent=2))
             print("=" * 60 + "\n")
             success_count += 1
-            # Mark seen in dry run too if needed or keep dry run read-only
         else:
             if not webhook_url:
                 logger.error("No Discord Webhook URL provided. Use --webhook-url or set DISCORD_WEBHOOK_URL.")
@@ -567,11 +647,12 @@ def run_digest(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Materials Science News Digest Discord Bot")
+    parser = argparse.ArgumentParser(description="Materials Science News Digest Discord Bot (Academic Edition)")
     parser.add_argument("--history", default="data/history.json", help="Path to history JSON file")
     parser.add_argument("--webhook-url", default=os.environ.get("DISCORD_WEBHOOK_URL"), help="Discord Webhook URL")
     parser.add_argument("--limit", type=int, default=1, help="Number of top articles to select (default: 1)")
-    parser.add_argument("--min-score", type=float, default=10.0, help="Minimum impact score threshold (default: 10.0)")
+    parser.add_argument("--min-score", type=float, default=75.0, help="Minimum impact threshold (default: 75.0)")
+    parser.add_argument("--days", type=int, default=None, help="Filter articles published within the last N days")
     parser.add_argument("--dry-run", action="store_true", help="Preview output without dispatching webhook")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print detailed scoring breakdown")
 
@@ -583,6 +664,7 @@ def main() -> None:
             webhook_url=args.webhook_url,
             limit=args.limit,
             min_score=args.min_score,
+            days_window=args.days,
             dry_run=args.dry_run,
             verbose=args.verbose,
         )
