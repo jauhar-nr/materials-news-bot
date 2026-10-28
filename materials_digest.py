@@ -67,11 +67,11 @@ DEFAULT_FEEDS = [
 # Premier international peer-reviewed journals (triggers quality reputation bonus)
 PREMIER_JOURNALS = [
     "Nature Materials", "Nature Energy", "Nature Nanotechnology", "Nature Physics",
-    "Nature Communications", "Nature", "Science Advances", "Science",
-    "Physical Review Letters", "Physical Review X", "PRL", "PRX",
-    "Advanced Materials", "Advanced Energy Materials", "Nano Letters", "ACS Nano",
-    "Journal of the American Chemical Society", "JACS", "Energy & Environmental Science",
-    "Matter", "Joule", "Applied Physics Letters",
+    "Nature Electronics", "Nature Photonics", "Nature Communications", "Nature",
+    "Science Advances", "Science", "Physical Review Letters", "Physical Review X",
+    "PRL", "PRX", "Advanced Materials", "Advanced Energy Materials", "Nano Letters",
+    "ACS Nano", "Journal of the American Chemical Society", "JACS", "Matter",
+    "Joule", "Energy & Environmental Science", "Optica", "Physical Review B", "PRB",
 ]
 JOURNAL_REGEX = re.compile(
     r"\b(" + "|".join(re.escape(j) for j in PREMIER_JOURNALS) + r")\b",
@@ -93,7 +93,8 @@ TOPIC_CATEGORIES = {
         "keywords": [
             "breakthrough", "record efficiency", "room temperature", "revolutionary",
             "unprecedented", "milestone", "first-ever", "world record", "game-changer",
-            "paradigm shift", "holy grail", "record-breaking", "first time",
+            "paradigm shift", "holy grail", "record-breaking", "first time", "sets record",
+            "bandgap record", "speed record", "record",
         ],
     },
     "energy_battery": {
@@ -112,14 +113,15 @@ TOPIC_CATEGORIES = {
         "keywords": [
             "superconductor", "superconductivity", "topological insulator",
             "quantum material", "quantum dot", "majorana", "spintronics",
-            "twistronics", "moiré", "quantum computing", "hall effect",
+            "twistronics", "moiré", "quantum computing", "hall effect", "quantum gate",
         ],
     },
     "advanced_2d": {
         "badge": "2D & Advanced Materials",
         "weight": 18.0,
         "keywords": [
-            "graphene", "mxene", "metal-organic framework", "mof", "covalent organic framework",
+            "semiconductor", "wide-bandgap", "ultrawide", "graphene", "mxene",
+            "metal-organic framework", "mof", "covalent organic framework",
             "cof", "metamaterial", "2d material", "aerogel", "nanotube", "nanomaterial",
             "self-healing", "biomaterial", "smart material", "transition metal dichalcogenide",
         ],
@@ -140,7 +142,7 @@ TOPIC_CATEGORIES = {
         "keywords": [
             "synthesize", "synthesis", "fabricate", "fabrication", "discover", "discovery",
             "engineer", "engineering", "novel", "pioneering", "scalable", "uncover",
-            "transform", "achieve", "reveal",
+            "transform", "achieve", "reveal", "thin film",
         ],
     },
 }
@@ -286,31 +288,42 @@ def calculate_impact_score(
     matched_keywords: List[str] = []
 
     for cat_id, cat_info in TOPIC_CATEGORIES.items():
-        cat_matched = False
         cat_weight = cat_info["weight"]
+        cat_matches = 0
+        cat_score = 0.0
+
         for kw in cat_info["keywords"]:
             if kw in title_lower:
-                keyword_score += cat_weight * 2.2
-                cat_matched = True
+                if cat_matches == 0:
+                    cat_score += cat_weight * 2.0
+                else:
+                    cat_score += 2.0  # minimal incremental bonus for extra keywords in same category
+                cat_matches += 1
                 matched_keywords.append(f"{kw} (title)")
             elif kw in desc_lower:
-                keyword_score += cat_weight * 1.0
-                cat_matched = True
+                if cat_matches == 0:
+                    cat_score += cat_weight * 1.0
+                else:
+                    cat_score += 1.0
+                cat_matches += 1
                 matched_keywords.append(kw)
 
-        if cat_matched:
+        if cat_matches > 0:
             matched_categories.add(cat_id)
+            # Cap maximum contribution from any single category to prevent keyword stacking
+            cat_cap = cat_weight * 2.2
+            keyword_score += min(cat_score, cat_cap)
 
-    # Premier journal prestige bonus (+35 pts)
+    # Premier journal prestige bonus (+55 pts for confirmed publication in top journal)
     detected_journal = detect_premier_journal(full_text)
-    journal_boost = 35.0 if detected_journal else 0.0
+    journal_boost = 55.0 if detected_journal else 0.0
 
     # Experimental validation check for preprints
     experimental_adj = 0.0
     if source_name == "arXiv":
         has_experimental = any(term in full_lower for term in EXPERIMENTAL_TERMS)
         if has_experimental:
-            experimental_adj = 10.0
+            experimental_adj = 5.0
         else:
             # Discount unvalidated theoretical calculations
             experimental_adj = -25.0
@@ -327,13 +340,22 @@ def calculate_impact_score(
         elif age_hours > 240:  # older than 10 days
             recency_score = -15.0
 
-    total_score = (
+    raw_total = (
         keyword_score +
         journal_boost +
         curated_boost +
         experimental_adj +
         recency_score
     )
+
+    # HARD CAP for raw arXiv preprints:
+    # If article is an unvetted arXiv preprint without a confirmed premier journal publication,
+    # strictly cap its total score at 75.0 points. This guarantees unverified preprints can
+    # NEVER cross the 115.0 weekly quality threshold and cannot beat peer-reviewed discoveries!
+    if source_name == "arXiv" and not detected_journal:
+        total_score = min(raw_total, 75.0)
+    else:
+        total_score = raw_total
 
     priority_order = [
         "breakthrough",
@@ -558,12 +580,19 @@ def build_discord_embed(article: Dict[str, Any]) -> Dict[str, Any]:
     return embed
 
 
-def send_discord_webhook(webhook_url: str, article: Dict[str, Any]) -> bool:
-    """Dispatches the Discord webhook payload with pristine embed and zero robotic headers."""
+def send_discord_webhook(
+    webhook_url: str,
+    article: Dict[str, Any],
+    mention_everyone: bool = False,
+) -> bool:
+    """Dispatches the Discord webhook payload with pristine embed and optional @everyone."""
     embed = build_discord_embed(article)
-    payload = {
+    payload: Dict[str, Any] = {
         "embeds": [embed],
     }
+    if mention_everyone:
+        payload["content"] = "@everyone"
+        payload["allowed_mentions"] = {"parse": ["everyone"]}
 
     req_data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -595,6 +624,7 @@ def run_digest(
     min_score: float = 115.0,
     days_window: Optional[int] = None,
     query: Optional[str] = None,
+    mention_everyone: bool = False,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> int:
@@ -701,7 +731,7 @@ def run_digest(
                 logger.error("No Discord Webhook URL provided. Use --webhook-url or set DISCORD_WEBHOOK_URL.")
                 return 1
 
-            if send_discord_webhook(webhook_url, article):
+            if send_discord_webhook(webhook_url, article, mention_everyone=mention_everyone):
                 history.add(article["id"])
                 history.add(article["link"])
                 success_count += 1
@@ -724,6 +754,7 @@ def main() -> None:
     parser.add_argument("--min-score", type=float, default=115.0, help="Minimum impact threshold (default: 115.0)")
     parser.add_argument("--days", type=int, default=None, help="Filter articles published within the last N days")
     parser.add_argument("--query", type=str, default=None, help="Target a specific article by keyword/title")
+    parser.add_argument("--mention-everyone", action="store_true", help="Include @everyone mention in message")
     parser.add_argument("--dry-run", action="store_true", help="Preview output without dispatching webhook")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print detailed scoring breakdown")
 
@@ -737,6 +768,7 @@ def main() -> None:
             min_score=args.min_score,
             days_window=args.days,
             query=args.query,
+            mention_everyone=args.mention_everyone,
             dry_run=args.dry_run,
             verbose=args.verbose,
         )

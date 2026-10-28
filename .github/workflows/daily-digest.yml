@@ -21,6 +21,11 @@ on:
         type: string
         default: ''
         required: false
+      mention_everyone:
+        description: 'Mention @everyone in Discord notification'
+        type: boolean
+        default: true
+        required: false
 
 concurrency:
   group: daily-digest
@@ -66,6 +71,7 @@ jobs:
           QUERY: ${{ inputs.query }}
           DRY_RUN: ${{ inputs.dry_run }}
           LIMIT: ${{ inputs.limit }}
+          MENTION_EVERYONE: ${{ inputs.mention_everyone }}
         run: |
           ARGS=("--history" "data/history.json" "--verbose")
           if [ "$DRY_RUN" = "true" ]; then
@@ -78,6 +84,9 @@ jobs:
           fi
           if [ -n "$QUERY" ]; then
             ARGS+=("--query" "$QUERY")
+          fi
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "$MENTION_EVERYONE" = "true" ]; then
+            ARGS+=("--mention-everyone")
           fi
           
           python3 materials_digest.py "${ARGS[@]}"

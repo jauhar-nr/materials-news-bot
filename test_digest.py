@@ -23,6 +23,7 @@ from materials_digest import (
     parse_date,
     run_digest,
     save_history,
+    send_discord_webhook,
 )
 
 
@@ -136,6 +137,29 @@ class TestImpactScoring(unittest.TestCase):
 
         self.assertGreater(score_fresh, score_old)
 
+    def test_scoring_arxiv_unvetted_hard_cap(self):
+        pub_now = datetime.datetime.now(datetime.timezone.utc)
+        # Even with many computational and 2D keywords, unvetted arXiv must be capped at 75.0
+        score, _, journal, _ = calculate_impact_score(
+            title="First-Principles Investigation of Irida-Graphane: A Wide-Band-Gap Semiconductor Derived from Irida-Graphene",
+            description="We perform density functional theory DFT calculations, ab initio molecular dynamics, and electronic bandgap simulations to explore device applications.",
+            source_name="arXiv",
+            pub_date=pub_now,
+        )
+        self.assertIsNone(journal)
+        self.assertLessEqual(score, 75.0)
+
+    def test_scoring_arxiv_with_premier_journal_not_hard_capped(self):
+        pub_now = datetime.datetime.now(datetime.timezone.utc)
+        score, _, journal, _ = calculate_impact_score(
+            title="Observation of fractional quantum hall effect in moiré graphene",
+            description="Published in Nature. We demonstrate quantum phase transitions using high-field transport.",
+            source_name="arXiv",
+            pub_date=pub_now,
+        )
+        self.assertEqual(journal, "Nature")
+        self.assertGreater(score, 115.0)
+
 
 class TestHistoryTracking(unittest.TestCase):
     def test_load_and_save_history(self):
@@ -196,6 +220,57 @@ class TestDiscordEmbed(unittest.TestCase):
         self.assertIn("Energy Storage & Batteries", embed["fields"][2]["value"])
         self.assertNotIn("footer", embed)
         self.assertNotIn("timestamp", embed)
+
+    @patch("urllib.request.urlopen")
+    def test_send_discord_webhook_with_mention(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 204
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        article = {
+            "id": "test-1",
+            "title": "Quantum Breakthrough",
+            "link": "https://example.com/test",
+            "description": "Novel state discovered.",
+            "source": "ScienceDaily",
+            "category": "Physics",
+            "score": 120.0,
+            "badges": ["Quantum & Superconductors"],
+        }
+        res = send_discord_webhook("https://discord.com/api/webhooks/123/xyz", article, mention_everyone=True)
+        self.assertTrue(res)
+
+        req_called = mock_urlopen.call_args[0][0]
+        payload = json.loads(req_called.data.decode("utf-8"))
+        self.assertEqual(payload.get("content"), "@everyone")
+        self.assertEqual(payload.get("allowed_mentions"), {"parse": ["everyone"]})
+        self.assertEqual(len(payload.get("embeds", [])), 1)
+
+    @patch("urllib.request.urlopen")
+    def test_send_discord_webhook_without_mention(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 204
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        article = {
+            "id": "test-2",
+            "title": "Quantum Breakthrough",
+            "link": "https://example.com/test",
+            "description": "Novel state discovered.",
+            "source": "ScienceDaily",
+            "category": "Physics",
+            "score": 120.0,
+            "badges": ["Quantum & Superconductors"],
+        }
+        res = send_discord_webhook("https://discord.com/api/webhooks/123/xyz", article, mention_everyone=False)
+        self.assertTrue(res)
+
+        req_called = mock_urlopen.call_args[0][0]
+        payload = json.loads(req_called.data.decode("utf-8"))
+        self.assertNotIn("content", payload)
+        self.assertNotIn("allowed_mentions", payload)
 
 
 class TestFeedFetching(unittest.TestCase):
