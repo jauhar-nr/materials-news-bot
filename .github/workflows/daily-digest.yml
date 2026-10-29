@@ -11,6 +11,11 @@ on:
         type: boolean
         default: false
         required: false
+      direct_publish:
+        description: 'Bypass review and publish directly to #materials-news'
+        type: boolean
+        default: false
+        required: false
       limit:
         description: 'Number of top articles to broadcast'
         type: number
@@ -32,7 +37,105 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  digest:
+  staging-review:
+    name: 1. Curate & Send Staging Preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      has_candidate: ${{ steps.check-candidate.outputs.has_candidate }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Restore history cache
+        uses: actions/cache@v4
+        id: history-cache
+        with:
+          path: data/history.json
+          key: materials-digest-history-${{ github.run_id }}
+          restore-keys: |
+            materials-digest-history-
+
+      - name: Ensure data directory and history file exist
+        run: |
+          mkdir -p data
+          if [ ! -f data/history.json ] || [ ! -s data/history.json ]; then
+            echo "[]" > data/history.json
+          fi
+
+      - name: Run unit tests
+        run: |
+          python3 -m unittest test_digest.py -v
+
+      - name: Run Curation (Staging or Direct)
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_STAGING_WEBHOOK_URL: ${{ secrets.DISCORD_STAGING_WEBHOOK_URL }}
+          QUERY: ${{ inputs.query }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          DIRECT_PUBLISH: ${{ inputs.direct_publish }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          ARGS=("--history" "data/history.json" "--verbose" "--save-candidate" "data/candidate.json")
+
+          if [ -n "$LIMIT" ]; then
+            ARGS+=("--limit" "$LIMIT")
+          else
+            ARGS+=("--limit" "1")
+          fi
+
+          if [ -n "$QUERY" ]; then
+            ARGS+=("--query" "$QUERY")
+          fi
+
+          if [ "$DRY_RUN" = "true" ]; then
+            ARGS+=("--dry-run")
+            python3 materials_digest.py "${ARGS[@]}"
+          elif [ "$DIRECT_PUBLISH" = "true" ]; then
+            ARGS+=("--webhook-url" "$DISCORD_WEBHOOK_URL" "--mention-everyone")
+            python3 materials_digest.py "${ARGS[@]}"
+          else
+            # Default 2-step verification: Send preview to staging channel
+            WEBHOOK="${DISCORD_STAGING_WEBHOOK_URL:-$DISCORD_WEBHOOK_URL}"
+            ARGS+=("--webhook-url" "$WEBHOOK" "--staging")
+            python3 materials_digest.py "${ARGS[@]}"
+          fi
+
+      - name: Check if qualifying candidate was selected
+        id: check-candidate
+        run: |
+          if [ -f data/candidate.json ] && [ -s data/candidate.json ]; then
+            COUNT=$(python3 -c "import json; data=json.load(open('data/candidate.json')); print(len(data))")
+            if [ "$COUNT" -gt 0 ]; then
+              echo "has_candidate=true" >> "$GITHUB_OUTPUT"
+              echo "Selected $COUNT candidate(s) for review."
+            else
+              echo "has_candidate=false" >> "$GITHUB_OUTPUT"
+              echo "No candidate met the minimum quality threshold."
+            fi
+          else
+            echo "has_candidate=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload candidate artifact
+        if: steps.check-candidate.outputs.has_candidate == 'true' && inputs.dry_run != true && inputs.direct_publish != true
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-artifact
+          path: data/candidate.json
+          retention-days: 2
+
+  publish-approval:
+    name: 2. Broadcast to #materials-news (Approval Required)
+    needs: staging-review
+    if: needs.staging-review.outputs.has_candidate == 'true' && inputs.dry_run != true && inputs.direct_publish != true
+    environment: production-publish
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -61,32 +164,27 @@ jobs:
             echo "[]" > data/history.json
           fi
 
-      - name: Run unit tests
-        run: |
-          python3 -m unittest test_digest.py -v
+      - name: Download approved candidate artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-artifact
+          path: data
 
-      - name: Run Daily Materials Digest
+      - name: Broadcast Approved Research to Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          QUERY: ${{ inputs.query }}
-          DRY_RUN: ${{ inputs.dry_run }}
-          LIMIT: ${{ inputs.limit }}
           MENTION_EVERYONE: ${{ inputs.mention_everyone }}
         run: |
-          ARGS=("--history" "data/history.json" "--verbose")
-          if [ "$DRY_RUN" = "true" ]; then
-            ARGS+=("--dry-run")
-          fi
-          if [ -n "$LIMIT" ]; then
-            ARGS+=("--limit" "$LIMIT")
-          else
-            ARGS+=("--limit" "1")
-          fi
-          if [ -n "$QUERY" ]; then
-            ARGS+=("--query" "$QUERY")
-          fi
-          if [ "${{ github.event_name }}" = "schedule" ] || [ "$MENTION_EVERYONE" = "true" ]; then
+          ARGS=("--history" "data/history.json" "--webhook-url" "$DISCORD_WEBHOOK_URL" "--publish-saved" "data/candidate.json")
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "$MENTION_EVERYONE" = "true" ] || [ -z "$MENTION_EVERYONE" ]; then
             ARGS+=("--mention-everyone")
           fi
           
           python3 materials_digest.py "${ARGS[@]}"
+
+      - name: Save updated history cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data/history.json
+          key: materials-digest-history-${{ github.run_id }}

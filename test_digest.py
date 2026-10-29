@@ -21,6 +21,7 @@ from materials_digest import (
     fetch_feed,
     load_history,
     parse_date,
+    publish_saved_candidates,
     run_digest,
     save_history,
     send_discord_webhook,
@@ -390,6 +391,99 @@ class TestRunDigest(unittest.TestCase):
                 verbose=False,
             )
             self.assertEqual(code, 0)
+
+    @patch("materials_digest.fetch_feed")
+    @patch("materials_digest.send_discord_webhook")
+    def test_run_digest_staging_mode(self, mock_webhook, mock_fetch):
+        mock_webhook.return_value = True
+        mock_fetch.return_value = [
+            {
+                "id": "art-staging-1",
+                "title": "Novel Perovskite Breakthrough in Solar Cells",
+                "link": "https://example.com/perovskite-staging",
+                "description": "Researchers synthesize perovskite thin films. Published in Nature Energy.",
+                "source": "Nature Energy",
+                "category": "Energy Materials",
+                "score": 150.0,
+                "premier_journal": "Nature Energy",
+                "badges": ["Energy Storage & Batteries"],
+                "breakdown": {},
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hist_file = os.path.join(tmpdir, "history.json")
+            cand_file = os.path.join(tmpdir, "candidate.json")
+
+            code = run_digest(
+                history_file=hist_file,
+                webhook_url="https://discord.com/api/webhooks/staging/123",
+                limit=1,
+                min_score=115.0,
+                staging=True,
+                save_candidate=cand_file,
+                verbose=False,
+            )
+            self.assertEqual(code, 0)
+            self.assertTrue(os.path.exists(cand_file))
+
+            # Candidate was saved
+            with open(cand_file, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(saved[0]["id"], "art-staging-1")
+
+            # History was NOT updated (remains empty in staging)
+            self.assertEqual(len(load_history(hist_file)), 0)
+
+            # Webhook was called with review required notice
+            mock_webhook.assert_called_once()
+            args, kwargs = mock_webhook.call_args
+            self.assertIn("REVIEW REQUIRED", kwargs.get("content_override", ""))
+            self.assertFalse(kwargs.get("mention_everyone", True))
+
+    @patch("materials_digest.send_discord_webhook")
+    def test_publish_saved_candidates(self, mock_webhook):
+        mock_webhook.return_value = True
+
+        candidate_data = [
+            {
+                "id": "approved-art-1",
+                "title": "Superconducting Hydride Record",
+                "link": "https://example.com/hydride",
+                "description": "High pressure synthesis in Nature Materials.",
+                "source": "Nature Materials",
+                "category": "Materials Science",
+                "score": 180.0,
+                "premier_journal": "Nature Materials",
+                "badges": ["Quantum & Superconductors"],
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hist_file = os.path.join(tmpdir, "history.json")
+            cand_file = os.path.join(tmpdir, "candidate.json")
+
+            with open(cand_file, "w", encoding="utf-8") as f:
+                json.dump(candidate_data, f)
+
+            code = publish_saved_candidates(
+                candidate_file=cand_file,
+                history_file=hist_file,
+                webhook_url="https://discord.com/api/webhooks/public/xyz",
+                mention_everyone=True,
+            )
+            self.assertEqual(code, 0)
+
+            # History NOW contains the approved article
+            history = load_history(hist_file)
+            self.assertIn("approved-art-1", history)
+            self.assertIn("https://example.com/hydride", history)
+
+            # Webhook was called with mention_everyone=True
+            mock_webhook.assert_called_once()
+            _, kwargs = mock_webhook.call_args
+            self.assertTrue(kwargs.get("mention_everyone"))
 
 
 if __name__ == "__main__":

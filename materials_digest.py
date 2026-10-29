@@ -754,13 +754,16 @@ def send_discord_webhook(
     webhook_url: str,
     article: Dict[str, Any],
     mention_everyone: bool = False,
+    content_override: Optional[str] = None,
 ) -> bool:
-    """Dispatches the Discord webhook payload with pristine embed and optional @everyone."""
+    """Dispatches the Discord webhook payload with pristine embed and optional @everyone or custom content."""
     embed = build_discord_embed(article)
     payload: Dict[str, Any] = {
         "embeds": [embed],
     }
-    if mention_everyone:
+    if content_override:
+        payload["content"] = content_override
+    elif mention_everyone:
         payload["content"] = "@everyone"
         payload["allowed_mentions"] = {"parse": ["everyone"]}
 
@@ -787,6 +790,70 @@ def send_discord_webhook(
         return False
 
 
+def publish_saved_candidates(
+    candidate_file: str,
+    history_file: str,
+    webhook_url: Optional[str],
+    mention_everyone: bool = False,
+    dry_run: bool = False,
+) -> int:
+    """Publishes previously approved candidates from a JSON file and records them in history."""
+    if not os.path.exists(candidate_file):
+        logger.error("Candidate file %s not found.", candidate_file)
+        return 1
+
+    try:
+        with open(candidate_file, "r", encoding="utf-8") as f:
+            candidates = json.load(f)
+    except Exception as exc:
+        logger.error("Failed to read candidate file %s: %s", candidate_file, exc)
+        return 1
+
+    if not isinstance(candidates, list) or not candidates:
+        logger.info("No candidates to publish in %s", candidate_file)
+        return 0
+
+    history = load_history(history_file)
+    success_count = 0
+
+    for article in candidates:
+        if "doi_link" not in article:
+            article["doi_link"] = extract_doi_link(article["link"])
+
+        logger.info(
+            "Publishing Approved Research: [Score %s] '%s' (%s)",
+            article.get("score"),
+            article["title"],
+            article["link"],
+        )
+
+        if dry_run:
+            print("\n" + "=" * 60)
+            print("DRY RUN: Publishing Approved Discovery")
+            print("=" * 60)
+            print(json.dumps(build_discord_embed(article), indent=2))
+            print("=" * 60 + "\n")
+            success_count += 1
+        else:
+            if not webhook_url:
+                logger.error("No Discord Webhook URL provided. Use --webhook-url or set DISCORD_WEBHOOK_URL.")
+                return 1
+
+            if send_discord_webhook(webhook_url, article, mention_everyone=mention_everyone):
+                history.add(article["id"])
+                history.add(article["link"])
+                success_count += 1
+            else:
+                logger.error("Failed to publish approved article '%s'", article["title"])
+
+    if not dry_run and success_count > 0:
+        save_history(history_file, history)
+        logger.info("Saved %d items to history file %s", len(history), history_file)
+
+    logger.info("Finished publishing: %d/%d successfully broadcast.", success_count, len(candidates))
+    return 0
+
+
 def run_digest(
     history_file: str,
     webhook_url: Optional[str] = None,
@@ -795,11 +862,13 @@ def run_digest(
     days_window: Optional[int] = None,
     query: Optional[str] = None,
     mention_everyone: bool = False,
+    staging: bool = False,
+    save_candidate: Optional[str] = None,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> int:
-    """Main execution flow with flexible quality-gating or targeted query."""
-    logger.info("Starting Materials News Digest run (limit=%d, min_score=%.1f)", limit, min_score)
+    """Main execution flow with flexible quality-gating, staging review, or targeted query."""
+    logger.info("Starting Materials News Digest run (limit=%d, min_score=%.1f, staging=%s)", limit, min_score, staging)
     history = load_history(history_file)
     logger.info("Loaded %d previously broadcast items from history", len(history))
 
@@ -873,7 +942,17 @@ def run_digest(
                 "Remaining silent to prevent channel noise.",
                 min_score,
             )
+            if save_candidate:
+                os.makedirs(os.path.dirname(os.path.abspath(save_candidate)), exist_ok=True)
+                with open(save_candidate, "w", encoding="utf-8") as f:
+                    json.dump([], f, indent=2)
             return 0
+
+    if save_candidate:
+        os.makedirs(os.path.dirname(os.path.abspath(save_candidate)), exist_ok=True)
+        with open(save_candidate, "w", encoding="utf-8") as f:
+            json.dump(selected, f, indent=2)
+        logger.info("Saved %d candidates for review to %s", len(selected), save_candidate)
 
     success_count = 0
     for article in selected:
@@ -890,7 +969,7 @@ def run_digest(
 
         if dry_run:
             print("\n" + "=" * 60)
-            print("DRY RUN: Academic Discord Embed Preview")
+            print("DRY RUN: Academic Discord Embed Preview" + (" (STAGING REVIEW)" if staging else ""))
             print("=" * 60)
             embed = build_discord_embed(article)
             print(json.dumps(embed, indent=2))
@@ -901,14 +980,25 @@ def run_digest(
                 logger.error("No Discord Webhook URL provided. Use --webhook-url or set DISCORD_WEBHOOK_URL.")
                 return 1
 
-            if send_discord_webhook(webhook_url, article, mention_everyone=mention_everyone):
-                history.add(article["id"])
-                history.add(article["link"])
-                success_count += 1
+            if staging:
+                staging_content = (
+                    "📋 **[REVIEW REQUIRED] Daily Materials Digest Candidate**\n"
+                    f"Impact Score: **{article.get('score')} pts** · Source: **{article.get('source')}**\n"
+                    "*Please review the preview below. Approve deployment in GitHub to broadcast to #materials-news.*"
+                )
+                if send_discord_webhook(webhook_url, article, mention_everyone=False, content_override=staging_content):
+                    success_count += 1
+                else:
+                    logger.error("Failed to deliver staging preview for '%s'", article["title"])
             else:
-                logger.error("Failed to deliver article '%s'", article["title"])
+                if send_discord_webhook(webhook_url, article, mention_everyone=mention_everyone):
+                    history.add(article["id"])
+                    history.add(article["link"])
+                    success_count += 1
+                else:
+                    logger.error("Failed to deliver article '%s'", article["title"])
 
-    if not dry_run and success_count > 0:
+    if not dry_run and not staging and success_count > 0:
         save_history(history_file, history)
         logger.info("Saved %d items to history file %s", len(history), history_file)
 
@@ -925,10 +1015,24 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=None, help="Filter articles published within the last N days")
     parser.add_argument("--query", type=str, default=None, help="Target a specific article by keyword/title")
     parser.add_argument("--mention-everyone", action="store_true", help="Include @everyone mention in message")
+    parser.add_argument("--staging", action="store_true", help="Run in staging review mode without recording history")
+    parser.add_argument("--save-candidate", type=str, default=None, help="Filepath to save selected candidate JSON")
+    parser.add_argument("--publish-saved", type=str, default=None, help="Filepath to publish approved candidate JSON")
     parser.add_argument("--dry-run", action="store_true", help="Preview output without dispatching webhook")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print detailed scoring breakdown")
 
     args = parser.parse_args()
+
+    if args.publish_saved:
+        sys.exit(
+            publish_saved_candidates(
+                candidate_file=args.publish_saved,
+                history_file=args.history,
+                webhook_url=args.webhook_url,
+                mention_everyone=args.mention_everyone,
+                dry_run=args.dry_run,
+            )
+        )
 
     sys.exit(
         run_digest(
@@ -939,6 +1043,8 @@ def main() -> None:
             days_window=args.days,
             query=args.query,
             mention_everyone=args.mention_everyone,
+            staging=args.staging,
+            save_candidate=args.save_candidate,
             dry_run=args.dry_run,
             verbose=args.verbose,
         )
