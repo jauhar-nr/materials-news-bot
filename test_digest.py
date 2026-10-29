@@ -44,6 +44,10 @@ class TestTextAndUrlCleaning(unittest.TestCase):
         raw = "arXiv:2610.12345v1 Announce Type: new \n Abstract: Novel 2D perovskite discovered."
         self.assertEqual(clean_text(raw), "Novel 2D perovskite discovered.")
 
+    def test_clean_text_latex_formulas(self):
+        raw = "monolayer ${\\mathrm{CuPdBr}}_{3}$ and machine-learned $\\mathrm{DFT}+U$ in ${\\mathrm{Bi}}_{0.5}{\\mathrm{Sb}}_{1.5}{\\mathrm{Te}}_{3}$"
+        self.assertEqual(clean_text(raw), "monolayer CuPdBr3 and machine-learned DFT+U in Bi0.5Sb1.5Te3")
+
     def test_clean_url_utm_stripping(self):
         url = "https://example.com/article/123?utm_source=rss&utm_medium=feed&ref=sciencedaily"
         cleaned = clean_url(url)
@@ -106,13 +110,13 @@ class TestImpactScoring(unittest.TestCase):
     def test_scoring_journal_boost(self):
         pub_now = datetime.datetime.now(datetime.timezone.utc)
         score_nature, _, journal_name, _ = calculate_impact_score(
-            title="Observation in high-Tc physics",
-            description="The study was published in Science and demonstrates novel phases.",
+            title="Observation in high-Tc superconductor",
+            description="The study was published in Science and demonstrates novel phases in cuprate crystals.",
             pub_date=pub_now,
         )
         score_plain, _, _, _ = calculate_impact_score(
-            title="Observation in high-Tc physics",
-            description="The study demonstrates novel phases.",
+            title="Observation in high-Tc superconductor",
+            description="The study demonstrates novel phases in cuprate crystals.",
             pub_date=pub_now,
         )
         self.assertEqual(journal_name, "Science")
@@ -136,6 +140,50 @@ class TestImpactScoring(unittest.TestCase):
         )
 
         self.assertGreater(score_fresh, score_old)
+
+    def test_scoring_quantum_computing_disqualification(self):
+        pub_now = datetime.datetime.now(datetime.timezone.utc)
+        score, _, _, breakdown = calculate_impact_score(
+            title="Quantum gates set speed record at 6.8 nanoseconds with over 99.98% accuracy",
+            description="Researchers from Jülich perform quantum operation on a qubit. The paper was published in Nature Communications.",
+            pub_date=pub_now,
+        )
+        # Must be disqualified (< 50.0 pts) and never cross the 115.0 quality gate
+        self.assertLessEqual(score, 45.0)
+        self.assertLess(breakdown["negative_penalty"], 0.0)
+
+    def test_scoring_material_anchor_required(self):
+        pub_now = datetime.datetime.now(datetime.timezone.utc)
+        score, _, _, breakdown = calculate_impact_score(
+            title="Breakthrough milestone discovery sets speed record",
+            description="Researchers achieve unprecedented results in physical sciences. Published in Science.",
+            pub_date=pub_now,
+        )
+        self.assertFalse(breakdown["has_material_anchor"])
+        self.assertLessEqual(score, 50.0)
+
+    def test_scoring_pure_materials_breakthrough(self):
+        pub_now = datetime.datetime.now(datetime.timezone.utc)
+        score, _, journal, breakdown = calculate_impact_score(
+            title="Sapphire-grown semiconductor film sets bandgap record",
+            description="Adding silicon to thin films of aluminum gallium oxide achieves record bandgap. Published in Nature.",
+            pub_date=pub_now,
+        )
+        self.assertTrue(breakdown["has_material_anchor"])
+        self.assertEqual(journal, "Nature")
+        self.assertGreaterEqual(score, 140.0)
+
+    def test_scoring_tier1_materials_journal(self):
+        pub_now = datetime.datetime.now(datetime.timezone.utc)
+        score, _, journal, breakdown = calculate_impact_score(
+            title="Single-crystal growth and physical properties of the antiferromagnetic double perovskite Ba2CoMoO6",
+            description="Magnetic and thermodynamic measurements on high-purity single crystals reveal phase transitions.",
+            source_name="Physical Review Materials",
+            pub_date=pub_now,
+        )
+        self.assertTrue(breakdown["has_material_anchor"])
+        self.assertEqual(breakdown["journal_boost"], 60.0)
+        self.assertGreaterEqual(score, 100.0)
 
     def test_scoring_arxiv_unvetted_hard_cap(self):
         pub_now = datetime.datetime.now(datetime.timezone.utc)

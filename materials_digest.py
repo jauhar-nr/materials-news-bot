@@ -42,6 +42,27 @@ logger = logging.getLogger("materials_digest")
 
 DEFAULT_FEEDS = [
     {
+        "name": "Nature Materials",
+        "category": "Materials Science",
+        "url": "https://www.nature.com/nmat.rss",
+        "type": "rss",
+        "curated_boost": 20.0,
+    },
+    {
+        "name": "Nature Energy",
+        "category": "Energy Materials",
+        "url": "https://www.nature.com/nenergy.rss",
+        "type": "rss",
+        "curated_boost": 20.0,
+    },
+    {
+        "name": "Physical Review Materials",
+        "category": "Materials Physics",
+        "url": "https://feeds.aps.org/rss/recent/prmaterials.xml",
+        "type": "rss",
+        "curated_boost": 20.0,
+    },
+    {
         "name": "ScienceDaily",
         "category": "Materials Science",
         "url": "https://www.sciencedaily.com/rss/matter_energy/materials_science.xml",
@@ -64,19 +85,103 @@ DEFAULT_FEEDS = [
     },
 ]
 
-# Premier international peer-reviewed journals (triggers quality reputation bonus)
-PREMIER_JOURNALS = [
-    "Nature Materials", "Nature Energy", "Nature Nanotechnology", "Nature Physics",
-    "Nature Electronics", "Nature Photonics", "Nature Communications", "Nature",
-    "Science Advances", "Science", "Physical Review Letters", "Physical Review X",
-    "PRL", "PRX", "Advanced Materials", "Advanced Energy Materials", "Nano Letters",
-    "ACS Nano", "Journal of the American Chemical Society", "JACS", "Matter",
-    "Joule", "Energy & Environmental Science", "Optica", "Physical Review B", "PRB",
+# Tier 1: Dedicated Peer-Reviewed Materials Science, Energy & Nanotechnology Journals (+60 pts)
+TIER1_MATERIALS_JOURNALS = [
+    "Nature Materials", "Nature Energy", "Nature Nanotechnology", "Nature Electronics",
+    "Nature Photonics", "Physical Review Materials", "PRMaterials", "Advanced Materials",
+    "Advanced Energy Materials", "Advanced Functional Materials", "ACS Nano", "Nano Letters",
+    "Acta Materialia", "Matter", "Joule", "Energy & Environmental Science", "APL Materials",
+    "Physical Review B", "PRB",
 ]
+
+# Tier 2: Premier Multidisciplinary Journals (+45 pts, conditional on verified Material Anchor & no penalty)
+TIER2_MULTIDISCIPLINARY_JOURNALS = [
+    "Nature Communications", "Nature", "Science Advances", "Science",
+    "Physical Review Letters", "Physical Review X", "PRL", "PRX",
+    "Journal of the American Chemical Society", "JACS", "Optica",
+]
+
+PREMIER_JOURNALS = TIER1_MATERIALS_JOURNALS + TIER2_MULTIDISCIPLINARY_JOURNALS
 JOURNAL_REGEX = re.compile(
     r"\b(" + "|".join(re.escape(j) for j in PREMIER_JOURNALS) + r")\b",
     re.IGNORECASE,
 )
+
+# Core Material Anchor keywords representing physical materials, substances, solid-state properties, and methods
+MATERIAL_ANCHORS = [
+    # Materials & substances
+    "material", "materials", "crystal", "crystals", "crystalline", "lattice",
+    "alloy", "alloys", "semiconductor", "semiconductors", "superconductor",
+    "superconductors", "superconducting", "superconductivity", "graphene",
+    "perovskite", "perovskites", "polymer", "polymers", "oxide", "oxides",
+    "nitride", "nitrides", "metal", "metallic", "ceramic", "ceramics",
+    "composite", "composites", "monolayer", "heterostructure", "heterostructures",
+    "nanotube", "nanotubes", "mxene", "chalcogenide", "chalcogenides",
+    "aerogel", "dielectric", "dielectrics", "electrolyte", "electrolytes",
+    "catalyst", "catalysts", "electrocatalyst", "electrocatalysts", "membrane",
+    "membranes", "solid-state", "thin film", "thin films", "nanomaterial",
+    "nanomaterials", "metamaterial", "metamaterials", "metal-organic framework",
+    "mof", "covalent organic framework", "cof",
+    # Solid-state physics & material properties
+    "bandgap", "band gap", "band structure", "carrier mobility", "fermi level",
+    "ferroelectric", "piezoelectric", "ferromagnetic", "antiferromagnetic",
+    "topological insulator", "topological material", "thermal conductivity",
+    "mechanical strength", "dislocation", "grain boundary", "defect", "defects",
+    "phase transition", "amorphous", "epitaxy", "epitaxial", "quantum material",
+    "quantum materials", "moiré", "twistronics", "interatomic potential",
+    # Simulation & characterization of matter
+    "density functional theory", "dft", "molecular dynamics", "ab initio",
+    "quantum espresso", "lammps", "x-ray diffraction", "xrd",
+    "transmission electron microscopy", "tem", "scanning electron microscopy",
+    "sem", "operando", "synchrotron", "spectroscopy",
+]
+ANCHOR_REGEX = re.compile(
+    r"\b(" + "|".join(re.escape(a) for a in MATERIAL_ANCHORS) + r")\b",
+    re.IGNORECASE,
+)
+
+# Negative Categories: severe penalty to disqualify non-materials fields
+NEGATIVE_CATEGORIES = {
+    "quantum_computing": {
+        "penalty": -70.0,
+        "keywords": [
+            "quantum gate", "quantum gates", "logic gate", "logic gates",
+            "qubit", "qubits", "transmon", "quantum processor", "quantum processors",
+            "quantum computer", "quantum computers", "quantum computing",
+            "quantum algorithm", "quantum algorithms", "quantum circuit", "quantum circuits",
+            "microwave pulse", "microwave pulses", "pulse shaping",
+            "quantum error correction", "readout fidelity", "coherence time",
+            "quantum volume", "quantum teleportation", "quantum key distribution", "qkd",
+        ],
+        "exempt_terms": ["quantum material", "quantum materials", "topological insulator", "superconducting material", "quantum dot"],
+    },
+    "clinical_medical": {
+        "penalty": -60.0,
+        "keywords": [
+            "clinical trial", "clinical trials", "in vivo", "patient", "patients",
+            "tumor", "tumors", "cancer therapy", "chemotherapy", "clinical study",
+            "mice", "mouse model", "animal model", "drug delivery efficacy", "clinical phase",
+        ],
+        "exempt_terms": [],
+    },
+    "astrophysics": {
+        "penalty": -60.0,
+        "keywords": [
+            "astronomy", "astrophysics", "telescope", "exoplanet", "exoplanets",
+            "galaxy", "galaxies", "black hole", "black holes", "stellar", "cosmic",
+            "supernova", "james webb", "interstellar",
+        ],
+        "exempt_terms": ["meteorite mineral", "high-pressure planetary material"],
+    },
+    "macro_robotics": {
+        "penalty": -50.0,
+        "keywords": [
+            "legged robot", "humanoid robot", "humanoid robots", "quadruped",
+            "drone", "drones", "autonomous vehicle", "autonomous driving",
+        ],
+        "exempt_terms": ["actuator material", "artificial muscle"],
+    },
+}
 
 # Experimental validation & synthesis markers
 EXPERIMENTAL_TERMS = [
@@ -94,7 +199,7 @@ TOPIC_CATEGORIES = {
             "breakthrough", "record efficiency", "room temperature", "revolutionary",
             "unprecedented", "milestone", "first-ever", "world record", "game-changer",
             "paradigm shift", "holy grail", "record-breaking", "first time", "sets record",
-            "bandgap record", "speed record", "record",
+            "bandgap record",
         ],
     },
     "energy_battery": {
@@ -113,7 +218,7 @@ TOPIC_CATEGORIES = {
         "keywords": [
             "superconductor", "superconductivity", "topological insulator",
             "quantum material", "quantum dot", "majorana", "spintronics",
-            "twistronics", "moiré", "quantum computing", "hall effect", "quantum gate",
+            "twistronics", "moiré", "hall effect",
         ],
     },
     "advanced_2d": {
@@ -160,6 +265,14 @@ def clean_text(text: Optional[str]) -> str:
     clean = re.sub(r"^arXiv:[0-9\.]+v?[0-9]*\s*Announce Type:\s*\w+\s*", "", clean, flags=re.IGNORECASE)
     # Remove redundant "Abstract:" or "Abstract -" prefixes
     clean = re.sub(r"^abstract\s*[:\-–]\s*", "", clean, flags=re.IGNORECASE)
+    # Clean LaTeX math and chemical formula markup (frequent in APS / PRMaterials RSS)
+    if "$" in clean or "\\mathrm" in clean:
+        clean = re.sub(r"\\(?:mathrm|mathbf|mathit|text)\{([^}]+)\}", r"\1", clean)
+        clean = re.sub(r"[_^]\{([^}]+)\}", r"\1", clean)
+        clean = re.sub(r"[_^]([a-zA-Z0-9])", r"\1", clean)
+        clean = re.sub(r"\{([^}]+)\}", r"\1", clean)
+        clean = clean.replace("$", "")
+        clean = re.sub(r"\\([a-zA-Z]+)", r"\1", clean)
     # Normalize whitespace
     clean = re.sub(r"\s+", " ", clean).strip()
     # Normalize spaces before punctuation
@@ -186,9 +299,20 @@ def clean_url(url: Optional[str]) -> str:
 
 
 def extract_doi_link(url: str, timeout: int = 8) -> Optional[str]:
-    """Extracts the original published paper DOI link from article webpage."""
+    """Extracts the original published paper DOI link from article webpage or direct URL."""
     if not url or "arxiv.org" in url:
         return None
+
+    # Fast inline DOI resolution for direct journal URLs
+    if "doi.org/" in url or "link.aps.org/doi/" in url:
+        doi_m = re.search(r"10\.[0-9]{4,9}/[^\s\"\'<>]+", url)
+        if doi_m:
+            return f"https://doi.org/{doi_m.group(0).rstrip('.,;()')}"
+    if "nature.com/articles/" in url:
+        nat_m = re.search(r"articles/([a-zA-Z0-9\.\-\_]+)", url)
+        if nat_m:
+            return f"https://doi.org/10.1038/{nat_m.group(1)}"
+
     req = urllib.request.Request(
         url,
         headers={
@@ -252,8 +376,11 @@ def parse_date(date_str: Optional[str]) -> Optional[datetime.datetime]:
     return None
 
 
-def detect_premier_journal(text: str) -> Optional[str]:
-    """Detects premier peer-reviewed journal citation in title or body."""
+def detect_premier_journal(text: str, source_name: str = "") -> Optional[str]:
+    """Detects premier peer-reviewed journal citation in title, body, or source name."""
+    if source_name in PREMIER_JOURNALS:
+        return source_name
+
     matches = JOURNAL_REGEX.findall(text)
     if not matches:
         return None
@@ -261,7 +388,7 @@ def detect_premier_journal(text: str) -> Optional[str]:
     matches_sorted = sorted(matches, key=len, reverse=True)
     best_match = matches_sorted[0].strip()
     # Standardize casing
-    if best_match.upper() in ("PRL", "PRX", "JACS"):
+    if best_match.upper() in ("PRL", "PRX", "JACS", "PRB"):
         return best_match.upper()
     return best_match.title()
 
@@ -274,8 +401,8 @@ def calculate_impact_score(
     curated_boost: float = 0.0,
 ) -> Tuple[float, List[str], Optional[str], Dict[str, Any]]:
     """
-    Computes a research impact score based on keywords, journal prestige,
-    experimental validation, recency, and title emphasis.
+    Computes a research impact score based on keywords, material anchors,
+    negative penalties, journal prestige tiers, experimental validation, and recency.
     Returns (total_score, active_badges, premier_journal, breakdown_dict).
     """
     full_text = f"{title} {description}"
@@ -283,6 +410,24 @@ def calculate_impact_score(
     desc_lower = description.lower()
     full_lower = full_text.lower()
     
+    # 1. Material Anchor Gating & Scoring
+    title_anchors = set(ANCHOR_REGEX.findall(title))
+    desc_anchors = set(ANCHOR_REGEX.findall(description))
+    has_material_anchor = (len(title_anchors) >= 1) or (len(desc_anchors) >= 2)
+    anchor_boost = min(len(title_anchors) * 12.0, 24.0) + min(len(desc_anchors) * 2.0, 8.0)
+
+    # 2. Negative Keyword Penalty Filter (disqualify non-materials fields)
+    negative_penalty = 0.0
+    negative_matches: List[str] = []
+    for neg_cat, neg_info in NEGATIVE_CATEGORIES.items():
+        is_exempt = any(re.search(r"\b" + re.escape(ex) + r"\b", full_lower) for ex in neg_info["exempt_terms"])
+        if not is_exempt:
+            for kw in neg_info["keywords"]:
+                if re.search(r"\b" + re.escape(kw) + r"\b", full_lower):
+                    negative_penalty = min(negative_penalty, neg_info["penalty"])
+                    negative_matches.append(f"{kw} ({neg_cat})")
+
+    # 3. Topic Category Keyword Scoring
     keyword_score = 0.0
     matched_categories: Set[str] = set()
     matched_keywords: List[str] = []
@@ -293,14 +438,15 @@ def calculate_impact_score(
         cat_score = 0.0
 
         for kw in cat_info["keywords"]:
-            if kw in title_lower:
+            kw_pattern = r"\b" + re.escape(kw) + r"\b"
+            if re.search(kw_pattern, title_lower):
                 if cat_matches == 0:
                     cat_score += cat_weight * 2.0
                 else:
                     cat_score += 2.0  # minimal incremental bonus for extra keywords in same category
                 cat_matches += 1
                 matched_keywords.append(f"{kw} (title)")
-            elif kw in desc_lower:
+            elif re.search(kw_pattern, desc_lower):
                 if cat_matches == 0:
                     cat_score += cat_weight * 1.0
                 else:
@@ -314,11 +460,23 @@ def calculate_impact_score(
             cat_cap = cat_weight * 2.2
             keyword_score += min(cat_score, cat_cap)
 
-    # Premier journal prestige bonus (+55 pts for confirmed publication in top journal)
-    detected_journal = detect_premier_journal(full_text)
-    journal_boost = 55.0 if detected_journal else 0.0
+    # 4. Premier journal prestige bonus (Tier 1 Dedicated Materials vs Tier 2 Multidisciplinary)
+    detected_journal = detect_premier_journal(full_text, source_name)
+    journal_boost = 0.0
+    if detected_journal:
+        if detected_journal in TIER1_MATERIALS_JOURNALS or source_name in TIER1_MATERIALS_JOURNALS:
+            # Tier 1 Dedicated Materials Journal: +60 pts
+            journal_boost = 60.0
+        elif detected_journal in TIER2_MULTIDISCIPLINARY_JOURNALS:
+            # Tier 2 Multidisciplinary: +45 pts ONLY if Material Anchor verified and no severe negative penalty
+            if has_material_anchor and negative_penalty == 0.0:
+                journal_boost = 45.0
+            else:
+                journal_boost = 0.0
+        else:
+            journal_boost = 25.0
 
-    # Experimental validation check for preprints
+    # 5. Experimental validation check for preprints
     experimental_adj = 0.0
     if source_name == "arXiv":
         has_experimental = any(term in full_lower for term in EXPERIMENTAL_TERMS)
@@ -328,7 +486,7 @@ def calculate_impact_score(
             # Discount unvalidated theoretical calculations
             experimental_adj = -25.0
 
-    # Recency boost
+    # 6. Recency boost
     recency_score = 0.0
     now = datetime.datetime.now(datetime.timezone.utc)
     if pub_date:
@@ -342,17 +500,23 @@ def calculate_impact_score(
 
     raw_total = (
         keyword_score +
+        anchor_boost +
         journal_boost +
         curated_boost +
         experimental_adj +
-        recency_score
+        recency_score +
+        negative_penalty
     )
 
-    # HARD CAP for raw arXiv preprints:
-    # If article is an unvetted arXiv preprint without a confirmed premier journal publication,
-    # strictly cap its total score at 75.0 points. This guarantees unverified preprints can
-    # NEVER cross the 115.0 weekly quality threshold and cannot beat peer-reviewed discoveries!
-    if source_name == "arXiv" and not detected_journal:
+    # 7. Quality & Material Gating Caps
+    if not has_material_anchor:
+        # Gating Cap 1: Missing core material anchors -> hard-cap at 50.0 pts
+        total_score = min(raw_total, 50.0)
+    elif negative_penalty <= -50.0:
+        # Gating Cap 2: Disqualified field (e.g. quantum computing or clinical trial) -> hard-cap at 45.0 pts
+        total_score = min(raw_total, 45.0)
+    elif source_name == "arXiv" and not detected_journal:
+        # Gating Cap 3: Unvetted arXiv preprints without premier journal capped at 75.0 pts
         total_score = min(raw_total, 75.0)
     else:
         total_score = raw_total
@@ -373,10 +537,14 @@ def calculate_impact_score(
 
     breakdown = {
         "keyword_score": round(keyword_score, 1),
+        "anchor_boost": round(anchor_boost, 1),
         "journal_boost": round(journal_boost, 1),
         "curated_boost": round(curated_boost, 1),
         "experimental_adj": round(experimental_adj, 1),
         "recency_score": round(recency_score, 1),
+        "negative_penalty": round(negative_penalty, 1),
+        "has_material_anchor": has_material_anchor,
+        "negative_matches": negative_matches[:4],
         "premier_journal": detected_journal,
         "matched_keywords": matched_keywords[:8],
     }
@@ -414,7 +582,9 @@ def fetch_feed(feed_cfg: Dict[str, Any], timeout: int = 15) -> List[Dict[str, An
         return []
 
     articles = []
-    items = root.findall(".//item")
+    items = root.findall(".//{*}item")
+    if not items:
+        items = root.findall(".//item")
     if not items:
         items = root.findall(".//{*}entry")
 
@@ -707,7 +877,7 @@ def run_digest(
 
     success_count = 0
     for article in selected:
-        if "doi_link" not in article and article.get("source") in ("ScienceDaily", "Phys.org"):
+        if "doi_link" not in article:
             article["doi_link"] = extract_doi_link(article["link"])
         venue_info = f" ({article['premier_journal']})" if article.get("premier_journal") else ""
         logger.info(
