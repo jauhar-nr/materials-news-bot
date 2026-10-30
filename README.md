@@ -8,7 +8,6 @@ Designed with clean, understated academic typography (Nature / Science briefing 
 
 ## Key Features
 
-- **Academic Journal Format**: Zero emoji clutter, understated typography, deep scientific blue palette, and clean excerpts without robotic intros.
 - **Peer-Reviewed Journal Prestige**: Automatically detects and prioritizes papers published in premier international journals (*Nature*, *Science*, *PRL*, *PRX*, *Advanced Materials*, *ACS Nano*, *JACS*).
 - **Experimental Validation Weighting**: Rewards physical fabrication, single-crystal synthesis, and battery prototype testing over unvalidated theoretical preprint claims.
 - **Flexible Quality-Gating (Anti-Spam)**: The bot checks feeds daily, but only broadcasts when a discovery meets the high-impact threshold (`>= 75.0` pts). On low-news or ordinary incremental days, it remains completely silent to protect your channel from spam.
