@@ -59,7 +59,7 @@ jobs:
           python-version: '3.12'
 
       - name: Restore history cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         id: history-cache
         with:
           path: data/history.json
@@ -155,7 +155,7 @@ jobs:
           python-version: '3.12'
 
       - name: Restore history cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         id: history-cache
         with:
           path: data/history.json
