@@ -179,12 +179,39 @@ class TestImpactScoring(unittest.TestCase):
         score, _, journal, breakdown = calculate_impact_score(
             title="Single-crystal growth and physical properties of the antiferromagnetic double perovskite Ba2CoMoO6",
             description="Magnetic and thermodynamic measurements on high-purity single crystals reveal phase transitions.",
-            source_name="Physical Review Materials",
+            source_name="Nature Materials",
             pub_date=pub_now,
         )
         self.assertTrue(breakdown["has_material_anchor"])
-        self.assertEqual(breakdown["journal_boost"], 60.0)
+        self.assertEqual(breakdown["journal_boost"], 70.0)
         self.assertGreaterEqual(score, 100.0)
+
+    def test_scoring_journal_tier_calibration(self):
+        pub_now = datetime.datetime.now(datetime.timezone.utc)
+        _, _, _, b_tier1 = calculate_impact_score(
+            title="Breakthrough in superconductor crystals",
+            description="High pressure synthesis.",
+            source_name="Nature Materials",
+            pub_date=pub_now,
+        )
+        _, _, _, b_tier2 = calculate_impact_score(
+            title="Breakthrough in superconductor crystals",
+            description="High pressure synthesis.",
+            source_name="Advanced Materials",
+            pub_date=pub_now,
+        )
+        _, _, _, b_tier3 = calculate_impact_score(
+            title="Breakthrough in superconductor crystals",
+            description="High pressure synthesis.",
+            source_name="Physical Review Materials",
+            pub_date=pub_now,
+        )
+        # Tier 1 (+70) > Tier 2 (+45) > Tier 3 (+25)
+        self.assertEqual(b_tier1["journal_boost"], 70.0)
+        self.assertEqual(b_tier2["journal_boost"], 45.0)
+        self.assertEqual(b_tier3["journal_boost"], 25.0)
+        self.assertGreater(b_tier1["journal_boost"], b_tier2["journal_boost"])
+        self.assertGreater(b_tier2["journal_boost"], b_tier3["journal_boost"])
 
     def test_scoring_arxiv_unvetted_hard_cap(self):
         pub_now = datetime.datetime.now(datetime.timezone.utc)
@@ -362,6 +389,37 @@ class TestFeedFetching(unittest.TestCase):
         self.assertIn("Breakthrough Discovery", art["badges"])
         self.assertIn("Energy Storage & Batteries", art["badges"])
 
+    @patch("urllib.request.urlopen")
+    def test_fetch_feed_dublin_core_date(self, mock_urlopen):
+        # Simulates APS / Nature RDF feed with <dc:date>
+        sample_rdf = b"""<?xml version="1.0" encoding="UTF-8"?>
+        <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+                 xmlns="http://purl.org/rss/1.0/"
+                 xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <item rdf:about="http://link.aps.org/doi/10.1103/abc">
+                <title>Carrier-driven magnetic behavior in CuPdBr3</title>
+                <link>http://link.aps.org/doi/10.1103/abc</link>
+                <description>Monolayer study</description>
+                <dc:date>2026-10-30T10:00:00+00:00</dc:date>
+            </item>
+        </rdf:RDF>"""
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = sample_rdf
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        feed_cfg = {
+            "name": "Physical Review Materials",
+            "category": "Materials Physics",
+            "url": "https://example.com/prmaterials.xml",
+            "curated_boost": 20.0,
+        }
+
+        articles = fetch_feed(feed_cfg)
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0]["pub_date"], "2026-10-30T10:00:00+00:00")
+
 
 class TestRunDigest(unittest.TestCase):
     @patch("materials_digest.fetch_feed")
@@ -391,6 +449,56 @@ class TestRunDigest(unittest.TestCase):
                 verbose=False,
             )
             self.assertEqual(code, 0)
+
+    @patch("materials_digest.fetch_feed")
+    def test_run_digest_days_window(self, mock_fetch):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        fresh_date = (now - datetime.timedelta(days=2)).isoformat()
+        stale_date = (now - datetime.timedelta(days=25)).isoformat()
+
+        mock_fetch.return_value = [
+            {
+                "id": "stale-paper",
+                "title": "Stale 25-day old paper with huge score",
+                "link": "https://example.com/stale",
+                "source": "Physical Review Materials",
+                "category": "Materials Physics",
+                "pub_date": stale_date,
+                "score": 210.0,
+                "badges": ["Quantum & Superconductors"],
+            },
+            {
+                "id": "fresh-paper",
+                "title": "Fresh 2-day old breakthrough paper",
+                "link": "https://example.com/fresh",
+                "source": "Nature Materials",
+                "category": "Materials Science",
+                "pub_date": fresh_date,
+                "score": 160.0,
+                "badges": ["Quantum & Superconductors"],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hist_file = os.path.join(tmpdir, "history.json")
+            cand_file = os.path.join(tmpdir, "candidate.json")
+            code = run_digest(
+                history_file=hist_file,
+                limit=1,
+                min_score=115.0,
+                days_window=7,
+                staging=True,
+                save_candidate=cand_file,
+                dry_run=True,
+                verbose=False,
+            )
+            self.assertEqual(code, 0)
+            self.assertTrue(os.path.exists(cand_file))
+            with open(cand_file, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            # The 25-day old paper was filtered out despite higher score; fresh paper won
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(saved[0]["id"], "fresh-paper")
 
     @patch("materials_digest.fetch_feed")
     @patch("materials_digest.send_discord_webhook")

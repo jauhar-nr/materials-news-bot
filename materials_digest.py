@@ -85,23 +85,32 @@ DEFAULT_FEEDS = [
     },
 ]
 
-# Tier 1: Dedicated Peer-Reviewed Materials Science, Energy & Nanotechnology Journals (+60 pts)
-TIER1_MATERIALS_JOURNALS = [
-    "Nature Materials", "Nature Energy", "Nature Nanotechnology", "Nature Electronics",
-    "Nature Photonics", "Physical Review Materials", "PRMaterials", "Advanced Materials",
-    "Advanced Energy Materials", "Advanced Functional Materials", "ACS Nano", "Nano Letters",
-    "Acta Materialia", "Matter", "Joule", "Energy & Environmental Science", "APL Materials",
-    "Physical Review B", "PRB",
+# Tier 1: World-Leading Flagships & Top-Tier Materials Journals (+70 pts)
+# Landmark journals where major paradigm-shifting discoveries are published.
+TIER1_FLAGSHIP_JOURNALS = [
+    "Nature Materials", "Nature Energy", "Nature Nanotechnology", "Nature Physics",
+    "Nature", "Science", "Physical Review Letters", "Physical Review X", "PRL", "PRX",
+    "Science Advances",
 ]
 
-# Tier 2: Premier Multidisciplinary Journals (+45 pts, conditional on verified Material Anchor & no penalty)
-TIER2_MULTIDISCIPLINARY_JOURNALS = [
-    "Nature Communications", "Nature", "Science Advances", "Science",
-    "Physical Review Letters", "Physical Review X", "PRL", "PRX",
-    "Journal of the American Chemical Society", "JACS", "Optica",
+# Tier 2: Premier Dedicated Materials & Chemical Science Journals (+45 pts)
+# Top-tier specialist journals for advanced materials, energy, and nanotechnology.
+TIER2_SPECIALIZED_MATERIALS_JOURNALS = [
+    "Advanced Materials", "Advanced Energy Materials", "Advanced Functional Materials",
+    "ACS Nano", "Nano Letters", "Journal of the American Chemical Society", "JACS",
+    "Matter", "Joule", "Energy & Environmental Science", "Nature Electronics",
+    "Nature Photonics",
 ]
 
-PREMIER_JOURNALS = TIER1_MATERIALS_JOURNALS + TIER2_MULTIDISCIPLINARY_JOURNALS
+# Tier 3: Reputable Specialized Physics & Multidisciplinary Open Journals (+25 pts)
+# Established peer-reviewed specialist physics/materials journals (e.g. solid-state DFT / characterization)
+TIER3_SPECIALIZED_SOLID_JOURNALS = [
+    "Physical Review Materials", "PRMaterials", "Physical Review B", "PRB",
+    "Acta Materialia", "Nature Communications", "APL Materials",
+    "Applied Physics Letters", "APL", "Optica",
+]
+
+PREMIER_JOURNALS = TIER1_FLAGSHIP_JOURNALS + TIER2_SPECIALIZED_MATERIALS_JOURNALS + TIER3_SPECIALIZED_SOLID_JOURNALS
 JOURNAL_REGEX = re.compile(
     r"\b(" + "|".join(re.escape(j) for j in PREMIER_JOURNALS) + r")\b",
     re.IGNORECASE,
@@ -262,9 +271,11 @@ def clean_text(text: Optional[str]) -> str:
     # Decode HTML entities (&amp;, &#39;, etc.)
     clean = html.unescape(clean)
     # Remove leading arXiv metadata prefixes if present (e.g. arXiv:2610.12345v1 Announce Type: new)
-    clean = re.sub(r"^arXiv:[0-9\.]+v?[0-9]*\s*Announce Type:\s*\w+\s*", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"^\s*arXiv:[0-9\.]+v?[0-9]*\s*Announce Type:\s*\w+\s*", "", clean, flags=re.IGNORECASE)
     # Remove redundant "Abstract:" or "Abstract -" prefixes
-    clean = re.sub(r"^abstract\s*[:\-–]\s*", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"^\s*abstract\s*[:\-–]\s*", "", clean, flags=re.IGNORECASE)
+    # Remove Nature/APS publication metadata prefixes if present in RSS content
+    clean = re.sub(r"^\s*(?:Nature|Physical Review)[^;]+;\s*(?:doi:\S+\s*)?", "", clean, flags=re.IGNORECASE)
     # Clean LaTeX math and chemical formula markup (frequent in APS / PRMaterials RSS)
     if "$" in clean or "\\mathrm" in clean:
         clean = re.sub(r"\\(?:mathrm|mathbf|mathit|text)\{([^}]+)\}", r"\1", clean)
@@ -384,13 +395,48 @@ def detect_premier_journal(text: str, source_name: str = "") -> Optional[str]:
     matches = JOURNAL_REGEX.findall(text)
     if not matches:
         return None
-    # Pick the most specific match (longest string)
-    matches_sorted = sorted(matches, key=len, reverse=True)
-    best_match = matches_sorted[0].strip()
-    # Standardize casing
-    if best_match.upper() in ("PRL", "PRX", "JACS", "PRB"):
-        return best_match.upper()
-    return best_match.title()
+
+    # Pick the most specific match (longest string first), deduplicated
+    matches_sorted = sorted(set(matches), key=len, reverse=True)
+
+    for match in matches_sorted:
+        match_str = match.strip()
+        match_lower = match_str.lower()
+
+        # Disambiguate common polysemous words: "science" and "matter"
+        if match_lower == "science":
+            valid_science = False
+            for m in re.finditer(r"\bScience\b", text):
+                start, end = m.start(), m.end()
+                prefix = text[max(0, start - 25):start].lower()
+                suffix = text[end:min(len(text), end + 25)].lower()
+                if any(w in prefix for w in ["materials", "computer", "surface", "data", "applied", "industrial", "life "]):
+                    continue
+                if any(w in suffix for w in ["and technology", "foundation", "council", "ministry", "daily", "news"]):
+                    continue
+                valid_science = True
+                break
+            if not valid_science:
+                continue
+
+        if match_lower == "matter":
+            valid_matter = False
+            for m in re.finditer(r"\bMatter\b", text):
+                start = m.start()
+                prefix = text[max(0, start - 20):start].lower()
+                if any(w in prefix for w in ["condensed", "dark", "soft", "active", "topological", "granular"]):
+                    continue
+                valid_matter = True
+                break
+            if not valid_matter:
+                continue
+
+        # Standardize casing
+        if match_str.upper() in ("PRL", "PRX", "JACS", "PRB"):
+            return match_str.upper()
+        return match_str.title()
+
+    return None
 
 
 def calculate_impact_score(
@@ -460,21 +506,37 @@ def calculate_impact_score(
             cat_cap = cat_weight * 2.2
             keyword_score += min(cat_score, cat_cap)
 
-    # 4. Premier journal prestige bonus (Tier 1 Dedicated Materials vs Tier 2 Multidisciplinary)
+    # 4. Premier journal prestige bonus (3 calibrated tiers)
     detected_journal = detect_premier_journal(full_text, source_name)
     journal_boost = 0.0
+    multidisciplinary_flagships = {
+        "Nature", "Science", "Physical Review Letters", "Physical Review X",
+        "PRL", "PRX", "Science Advances",
+    }
     if detected_journal:
-        if detected_journal in TIER1_MATERIALS_JOURNALS or source_name in TIER1_MATERIALS_JOURNALS:
-            # Tier 1 Dedicated Materials Journal: +60 pts
-            journal_boost = 60.0
-        elif detected_journal in TIER2_MULTIDISCIPLINARY_JOURNALS:
-            # Tier 2 Multidisciplinary: +45 pts ONLY if Material Anchor verified and no severe negative penalty
-            if has_material_anchor and negative_penalty == 0.0:
-                journal_boost = 45.0
+        if detected_journal in TIER1_FLAGSHIP_JOURNALS or source_name in TIER1_FLAGSHIP_JOURNALS:
+            # Tier 1 Flagship: +70 pts (multidisciplinary flagships require verified material anchor & 0 penalty)
+            if detected_journal in multidisciplinary_flagships or source_name in multidisciplinary_flagships:
+                if has_material_anchor and negative_penalty == 0.0:
+                    journal_boost = 70.0
+                else:
+                    journal_boost = 0.0
             else:
-                journal_boost = 0.0
+                journal_boost = 70.0
+        elif detected_journal in TIER2_SPECIALIZED_MATERIALS_JOURNALS or source_name in TIER2_SPECIALIZED_MATERIALS_JOURNALS:
+            # Tier 2 Dedicated High-Impact Materials: +45 pts
+            journal_boost = 45.0
+        elif detected_journal in TIER3_SPECIALIZED_SOLID_JOURNALS or source_name in TIER3_SPECIALIZED_SOLID_JOURNALS:
+            # Tier 3 Specialized Physics & Materials / Multidisciplinary Open: +25 pts
+            if detected_journal == "Nature Communications":
+                if has_material_anchor and negative_penalty == 0.0:
+                    journal_boost = 25.0
+                else:
+                    journal_boost = 0.0
+            else:
+                journal_boost = 25.0
         else:
-            journal_boost = 25.0
+            journal_boost = 15.0
 
     # 5. Experimental validation check for preprints
     experimental_adj = 0.0
@@ -486,17 +548,26 @@ def calculate_impact_score(
             # Discount unvalidated theoretical calculations
             experimental_adj = -25.0
 
-    # 6. Recency boost
+    # 6. Recency boost & decay penalty
     recency_score = 0.0
     now = datetime.datetime.now(datetime.timezone.utc)
     if pub_date:
         age_hours = (now - pub_date).total_seconds() / 3600.0
-        if age_hours <= 36:
-            recency_score = 15.0
+        if age_hours <= 24:
+            recency_score = 20.0
+        elif age_hours <= 48:
+            recency_score = 12.0
         elif age_hours <= 72:
-            recency_score = 8.0
-        elif age_hours > 240:  # older than 10 days
-            recency_score = -15.0
+            recency_score = 6.0
+        elif age_hours <= 168:  # 3 - 7 days: neutral
+            recency_score = 0.0
+        elif age_hours <= 336:  # 7 - 14 days old: moderate penalty
+            recency_score = -25.0
+        else:  # older than 14 days: severe staleness penalty
+            recency_score = -50.0
+    else:
+        # Unknown publication date: small conservative penalty to prioritize verifiable fresh papers
+        recency_score = -10.0
 
     raw_total = (
         keyword_score +
@@ -617,6 +688,10 @@ def fetch_feed(feed_cfg: Dict[str, Any], timeout: int = 15) -> List[Dict[str, An
             desc_el = item.find("{*}summary")
         if desc_el is None:
             desc_el = item.find("{*}content")
+        if desc_el is None:
+            desc_el = item.find("{*}encoded")
+        if desc_el is None:
+            desc_el = item.find("{http://purl.org/rss/1.0/modules/content/}encoded")
         raw_desc = desc_el.text if (desc_el is not None and desc_el.text) else ""
         desc = clean_text(raw_desc)
 
@@ -625,6 +700,10 @@ def fetch_feed(feed_cfg: Dict[str, Any], timeout: int = 15) -> List[Dict[str, An
             pub_el = item.find("{*}published")
         if pub_el is None:
             pub_el = item.find("{*}updated")
+        if pub_el is None:
+            pub_el = item.find("{*}date")
+        if pub_el is None:
+            pub_el = item.find("{http://purl.org/dc/elements/1.1/}date")
         pub_str = pub_el.text if (pub_el is not None and pub_el.text) else ""
         pub_date = parse_date(pub_str)
 
@@ -684,8 +763,8 @@ def build_discord_embed(article: Dict[str, Any]) -> Dict[str, Any]:
     """
     title = article["title"]
     link = article["link"]
-    source = article["source"]
-    category = article["category"]
+    source = article.get("source", "Research Publication")
+    category = article.get("category", "Materials Science")
     premier_journal = article.get("premier_journal")
     doi_link = article.get("doi_link")
     badges = article.get("badges", [])
@@ -898,12 +977,13 @@ def run_digest(
             cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_window)
             filtered_by_window = []
             for a in all_articles:
-                if a["pub_date"]:
-                    dt = datetime.datetime.fromisoformat(a["pub_date"])
-                    if dt >= cutoff:
-                        filtered_by_window.append(a)
-                else:
-                    filtered_by_window.append(a)
+                if a.get("pub_date"):
+                    try:
+                        dt = datetime.datetime.fromisoformat(a["pub_date"])
+                        if dt >= cutoff:
+                            filtered_by_window.append(a)
+                    except Exception:
+                        pass
             all_articles = filtered_by_window
             logger.info("Retained %d articles within the last %d days", len(all_articles), days_window)
 
@@ -1012,7 +1092,7 @@ def main() -> None:
     parser.add_argument("--webhook-url", default=os.environ.get("DISCORD_WEBHOOK_URL"), help="Discord Webhook URL")
     parser.add_argument("--limit", type=int, default=1, help="Number of top articles to select (default: 1)")
     parser.add_argument("--min-score", type=float, default=115.0, help="Minimum impact threshold (default: 115.0)")
-    parser.add_argument("--days", type=int, default=None, help="Filter articles published within the last N days")
+    parser.add_argument("--days", type=int, default=7, help="Filter articles published within the last N days (default: 7)")
     parser.add_argument("--query", type=str, default=None, help="Target a specific article by keyword/title")
     parser.add_argument("--mention-everyone", action="store_true", help="Include @everyone mention in message")
     parser.add_argument("--staging", action="store_true", help="Run in staging review mode without recording history")

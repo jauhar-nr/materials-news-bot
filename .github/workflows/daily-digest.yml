@@ -26,6 +26,11 @@ on:
         type: string
         default: ''
         required: false
+      days:
+        description: 'Maximum age of articles in days'
+        type: number
+        default: 7
+        required: false
       mention_everyone:
         description: 'Mention @everyone in Discord notification'
         type: boolean
@@ -81,8 +86,9 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           DIRECT_PUBLISH: ${{ inputs.direct_publish }}
           LIMIT: ${{ inputs.limit }}
+          DAYS: ${{ inputs.days || '7' }}
         run: |
-          ARGS=("--history" "data/history.json" "--verbose" "--save-candidate" "data/candidate.json")
+          ARGS=("--history" "data/history.json" "--verbose" "--save-candidate" "data/candidate.json" "--days" "$DAYS")
 
           if [ -n "$LIMIT" ]; then
             ARGS+=("--limit" "$LIMIT")
