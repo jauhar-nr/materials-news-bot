@@ -61,15 +61,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Restore history cache
-        uses: actions/cache/restore@v4
-        id: history-cache
-        with:
-          path: data/history.json
-          key: materials-digest-history-${{ github.run_id }}
-          restore-keys: |
-            materials-digest-history-
-
       - name: Ensure data directory and history file exist
         run: |
           mkdir -p data
@@ -157,15 +148,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Restore history cache
-        uses: actions/cache/restore@v4
-        id: history-cache
-        with:
-          path: data/history.json
-          key: materials-digest-history-${{ github.run_id }}
-          restore-keys: |
-            materials-digest-history-
-
       - name: Ensure history file exists
         run: |
           mkdir -p data
@@ -203,10 +185,3 @@ jobs:
             git commit -m "chore(history): record published research discovery [skip ci]"
             git push origin main
           fi
-
-      - name: Save updated history cache
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: data/history.json
-          key: materials-digest-history-${{ github.run_id }}
