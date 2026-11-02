@@ -41,6 +41,9 @@ concurrency:
   group: daily-digest
   cancel-in-progress: false
 
+permissions:
+  contents: write
+
 jobs:
   staging-review:
     name: 1. Curate & Send Staging Preview
@@ -187,6 +190,19 @@ jobs:
           fi
           
           python3 materials_digest.py "${ARGS[@]}"
+
+      - name: Commit updated history to repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main || true
+          git add data/history.json
+          if git diff --staged --quiet; then
+            echo "No history changes to commit."
+          else
+            git commit -m "chore(history): record published research discovery [skip ci]"
+            git push origin main
+          fi
 
       - name: Save updated history cache
         uses: actions/cache/save@v4
