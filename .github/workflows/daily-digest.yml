@@ -34,7 +34,7 @@ on:
       mention_everyone:
         description: 'Mention @everyone in Discord notification'
         type: boolean
-        default: true
+        default: false
         required: false
 
 concurrency:
@@ -98,7 +98,10 @@ jobs:
             ARGS+=("--dry-run")
             python3 materials_digest.py "${ARGS[@]}"
           elif [ "$DIRECT_PUBLISH" = "true" ]; then
-            ARGS+=("--webhook-url" "$DISCORD_WEBHOOK_URL" "--mention-everyone")
+            ARGS+=("--webhook-url" "$DISCORD_WEBHOOK_URL")
+            if [ "$MENTION_EVERYONE" = "true" ]; then
+              ARGS+=("--mention-everyone")
+            fi
             python3 materials_digest.py "${ARGS[@]}"
           else
             # Default 2-step verification: Send preview to staging channel
@@ -167,7 +170,7 @@ jobs:
           MENTION_EVERYONE: ${{ inputs.mention_everyone }}
         run: |
           ARGS=("--history" "data/history.json" "--webhook-url" "$DISCORD_WEBHOOK_URL" "--publish-saved" "data/candidate.json")
-          if [ "${{ github.event_name }}" = "schedule" ] || [ "$MENTION_EVERYONE" = "true" ] || [ -z "$MENTION_EVERYONE" ]; then
+          if [ "$MENTION_EVERYONE" = "true" ]; then
             ARGS+=("--mention-everyone")
           fi
           
